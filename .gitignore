@@ -53,3 +53,5 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+pciem_uproxy
