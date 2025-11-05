@@ -1,14 +1,14 @@
-#include "qemu/osdep.h"
+#include "hw/misc/protopciem_backend.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/osdep.h"
 #include "qemu/timer.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
-#include "hw/misc/protopciem_backend.h"
 
 static void gpu_draw_pixel(ProtoPCIemState *s, int x, int y, uint8_t r, uint8_t g, uint8_t b)
 {
@@ -159,148 +159,6 @@ static void backend_send_message(ProtoPCIemState *s, ProtoPciemMessage *msg)
     }
 }
 
-static void backend_handle_message(ProtoPCIemState *s, ProtoPciemMessage *msg)
-{
-    switch (msg->type)
-    {
-    case MSG_MMIO_READ: {
-        uint64_t val = 0;
-        switch (msg->addr)
-        {
-        case REG_CONTROL:
-            val = s->control;
-            break;
-        case REG_STATUS:
-            val = s->status;
-            break;
-        case REG_CMD:
-            val = s->cmd;
-            break;
-        case REG_DATA:
-            val = s->data;
-            break;
-        case REG_RESULT_LO:
-            val = s->result_lo;
-            break;
-        case REG_RESULT_HI:
-            val = s->result_hi;
-            break;
-        case REG_DMA_SRC_LO:
-            val = s->dma_src_lo;
-            break;
-        case REG_DMA_SRC_HI:
-            val = s->dma_src_hi;
-            break;
-        case REG_DMA_DST_LO:
-            val = s->dma_dst_lo;
-            break;
-        case REG_DMA_DST_HI:
-            val = s->dma_dst_hi;
-            break;
-        case REG_DMA_LEN:
-            val = s->dma_len;
-            break;
-        default:
-            val = 0;
-            break;
-        }
-        ProtoPciemMessage reply = {.type = MSG_MMIO_READ_REPLY, .size = msg->size, .addr = msg->addr, .data = val};
-        backend_send_message(s, &reply);
-        break;
-    }
-
-    case MSG_MMIO_WRITE:
-        switch (msg->addr)
-        {
-        case REG_CONTROL:
-            s->control = msg->data;
-            if (msg->data & CTRL_RESET)
-            {
-                s->status = 0;
-                s->cmd = 0;
-                s->data = 0;
-                gpu_clear(s, 0, 0, 0);
-                backend_update_display(s);
-            }
-            break;
-        case REG_STATUS:
-            s->status = msg->data;
-            break;
-        case REG_CMD:
-            s->cmd = msg->data;
-            if (s->cmd != 0)
-            {
-                s->status &= ~(STATUS_DONE | STATUS_ERROR);
-                s->status |= STATUS_BUSY;
-                timer_mod(s->process_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 5000000);
-            }
-            break;
-        case REG_DATA:
-            s->data = msg->data;
-            break;
-        case REG_RESULT_LO:
-            s->result_lo = msg->data;
-            break;
-        case REG_RESULT_HI:
-            s->result_hi = msg->data;
-            break;
-        case REG_DMA_SRC_LO:
-            s->dma_src_lo = msg->data;
-            break;
-        case REG_DMA_SRC_HI:
-            s->dma_src_hi = msg->data;
-            break;
-        case REG_DMA_DST_LO:
-            s->dma_dst_lo = msg->data;
-            break;
-        case REG_DMA_DST_HI:
-            s->dma_dst_hi = msg->data;
-            break;
-        case REG_DMA_LEN:
-            s->dma_len = msg->data;
-            break;
-        default:
-            break;
-        }
-        break;
-
-    case MSG_DMA_WRITE: {
-        if (msg->size == 0)
-        {
-            printf("[QEMU ProtoPCIem] DMA transfer complete\n");
-
-            if (s->cmd == CMD_EXECUTE_CMDBUF)
-            {
-                backend_execute_command_buffer(s);
-            }
-            else if (s->cmd == CMD_DMA_FRAME)
-            {
-                backend_update_display(s);
-                dpy_gfx_update_full(s->con);
-            }
-
-            s->status |= STATUS_DONE;
-            s->status &= ~STATUS_BUSY;
-            ProtoPciemMessage done_msg = {.type = MSG_CMD_DONE};
-            backend_send_message(s, &done_msg);
-        }
-        break;
-    }
-
-    case MSG_RESET:
-        s->control = 0;
-        s->status = 0;
-        s->cmd = 0;
-        s->data = 0;
-        gpu_clear(s, 0, 0, 0);
-        backend_update_display(s);
-        break;
-
-    default:
-        break;
-    }
-}
-
 static void backend_process_complete(void *opaque)
 {
     ProtoPCIemState *s = opaque;
@@ -374,6 +232,150 @@ static void backend_process_complete(void *opaque)
         ProtoPciemMessage done_msg = {.type = MSG_CMD_DONE};
         backend_send_message(s, &done_msg);
         printf("[QEMU ProtoPCIem] Command complete, sent MSG_CMD_DONE\n");
+    }
+}
+
+static void backend_handle_message(ProtoPCIemState *s, ProtoPciemMessage *msg)
+{
+    switch (msg->type)
+    {
+    case MSG_MMIO_READ: {
+        uint64_t val = 0;
+        switch (msg->addr)
+        {
+        case REG_CONTROL:
+            val = s->control;
+            break;
+        case REG_STATUS:
+            val = s->status;
+            break;
+        case REG_CMD:
+            val = s->cmd;
+            break;
+        case REG_DATA:
+            val = s->data;
+            break;
+        case REG_RESULT_LO:
+            val = s->result_lo;
+            break;
+        case REG_RESULT_HI:
+            val = s->result_hi;
+            break;
+        case REG_DMA_SRC_LO:
+            val = s->dma_src_lo;
+            break;
+        case REG_DMA_SRC_HI:
+            val = s->dma_src_hi;
+            break;
+        case REG_DMA_DST_LO:
+            val = s->dma_dst_lo;
+            break;
+        case REG_DMA_DST_HI:
+            val = s->dma_dst_hi;
+            break;
+        case REG_DMA_LEN:
+            val = s->dma_len;
+            break;
+        default:
+            val = 0;
+            break;
+        }
+        ProtoPciemMessage reply = {.type = MSG_MMIO_READ_REPLY, .size = msg->size, .addr = msg->addr, .data = val};
+        backend_send_message(s, &reply);
+        break;
+    }
+
+    case MSG_MMIO_WRITE:
+        switch (msg->addr)
+        {
+        case REG_CONTROL:
+            s->control = msg->data;
+            if (msg->data & CTRL_RESET)
+            {
+                s->status = 0;
+                s->cmd = 0;
+                s->data = 0;
+                gpu_clear(s, 0, 0, 0);
+                backend_update_display(s);
+            }
+            break;
+        case REG_STATUS:
+            s->status = msg->data;
+            break;
+        case REG_CMD:
+            s->cmd = msg->data;
+            if (s->cmd == CMD_DMA_FRAME || s->cmd == CMD_EXECUTE_CMDBUF)
+            {
+                backend_process_complete(s);
+            }
+            else
+            {
+                timer_mod(s->process_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 5000000);
+            }
+            break;
+        case REG_DATA:
+            s->data = msg->data;
+            break;
+        case REG_RESULT_LO:
+            s->result_lo = msg->data;
+            break;
+        case REG_RESULT_HI:
+            s->result_hi = msg->data;
+            break;
+        case REG_DMA_SRC_LO:
+            s->dma_src_lo = msg->data;
+            break;
+        case REG_DMA_SRC_HI:
+            s->dma_src_hi = msg->data;
+            break;
+        case REG_DMA_DST_LO:
+            s->dma_dst_lo = msg->data;
+            break;
+        case REG_DMA_DST_HI:
+            s->dma_dst_hi = msg->data;
+            break;
+        case REG_DMA_LEN:
+            s->dma_len = msg->data;
+            break;
+        default:
+            break;
+        }
+        break;
+
+    case MSG_DMA_WRITE: {
+        if (msg->size == 0)
+        {
+            printf("[QEMU ProtoPCIem] DMA transfer complete\n");
+
+            if (s->cmd == CMD_EXECUTE_CMDBUF)
+            {
+                backend_execute_command_buffer(s);
+            }
+            else if (s->cmd == CMD_DMA_FRAME)
+            {
+                backend_update_display(s);
+                dpy_gfx_update_full(s->con);
+            }
+
+            s->status |= STATUS_DONE;
+            s->status &= ~STATUS_BUSY;
+            ProtoPciemMessage done_msg = {.type = MSG_CMD_DONE};
+            backend_send_message(s, &done_msg);
+        }
+        break;
+    }
+
+    case MSG_RESET:
+        s->control = 0;
+        s->status = 0;
+        s->cmd = 0;
+        s->data = 0;
+        gpu_clear(s, 0, 0, 0);
+        backend_update_display(s);
+        break;
+
+    default:
+        break;
     }
 }
 
@@ -492,7 +494,7 @@ static void backend_poll_timer(void *opaque)
     {
         qemu_chr_fe_accept_input(&s->chr);
     }
-    timer_mod(s->poll_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 10);
+    timer_mod(s->poll_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
 }
 
 static void backend_invalidate_display(void *opaque)
@@ -519,7 +521,7 @@ static void protopciem_backend_realize(DeviceState *dev, Error **errp)
     qemu_chr_fe_set_handlers(&s->chr, backend_chr_can_receive, backend_chr_receive, NULL, NULL, s, NULL, true);
 
     s->poll_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, backend_poll_timer, s);
-    timer_mod(s->poll_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 10);
+    timer_mod(s->poll_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
 
     s->recv_state = RECV_STATE_HEADER;
     s->recv_pos = 0;

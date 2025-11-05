@@ -420,7 +420,7 @@ static int pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         ret = -ENOMEM;
         goto err_regions;
     }
-    pr_info("BAR0 mapped at %p (size: %llu bytes)\n", (u64)pci_resource_len(pdev, 0));
+    pr_info("BAR0 mapped at %px (size: %llu bytes)\n", adev->bar0, (u64)pci_resource_len(pdev, 0));
 
     ret = pci_enable_msi(pdev);
     if (ret == 0)
@@ -466,7 +466,7 @@ static int pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         ret = -ENOMEM;
         goto err_wq;
     }
-    dev_info(&pdev->dev, "DMA command buffer: virt=%p phys=%pad size=%zu\n", adev->cmdbuf_virt, &adev->cmdbuf_phys,
+    dev_info(&pdev->dev, "DMA command buffer: virt=%px phys=%pad size=%zu\n", adev->cmdbuf_virt, &adev->cmdbuf_phys,
              adev->cmdbuf_size);
 
     adev->framebuf_size = MMAP_SIZE;
@@ -477,7 +477,7 @@ static int pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         ret = -ENOMEM;
         goto err_dma_cmdbuf;
     }
-    dev_info(&pdev->dev, "DMA frame buffer (double): virt=%p phys=%pad size=%zu\n", adev->framebuf_virt,
+    dev_info(&pdev->dev, "DMA frame buffer (double): virt=%px phys=%pad size=%zu\n", adev->framebuf_virt,
              &adev->framebuf_phys, adev->framebuf_size);
 
     adev->protopciem_miscdev.minor = MISC_DYNAMIC_MINOR;

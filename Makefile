@@ -3,11 +3,11 @@ PWD := $(shell pwd)
 
 CC = x86_64-linux-gnu-gcc
 
-# Kernel modules
+pciem-objs := pciem_framework.o pciem_device_logic.o
+
 obj-m += pciem.o
 obj-m += protopciem_driver.o
 
-# Userspace proxy
 PROXY_SRC = pciem_uproxy.c
 PROXY_BIN = pciem_uproxy
 

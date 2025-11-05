@@ -1,82 +1,49 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/pci.h>
+#include <linux/pci_ids.h>
+
+#include "pciem_device.h"
+#include "pciem_framework.h"
+#include "pciem_ops.h"
 #include <asm/cacheflush.h>
 #include <asm/io.h>
+#include <asm/tlbflush.h>
 #include <linux/atomic.h>
-#include <linux/completion.h>
 #include <linux/delay.h>
-#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/ioport.h>
-#include <linux/irq_work.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
-#include <linux/miscdevice.h>
-#include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/msi.h>
-#include <linux/mutex.h>
-#include <linux/pci.h>
 #include <linux/pci-acpi.h>
 #include <linux/pci_regs.h>
-#include <linux/platform_device.h>
-#include <linux/poll.h>
 #include <linux/resource.h>
 #include <linux/sched.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
-#include <linux/wait.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("cakehonolulu (cakehonolulu@protonmail.com)");
-MODULE_DESCRIPTION("Synthethic PCIe device with QEMU forwarding");
+MODULE_DESCRIPTION("Synthetic PCIe device with QEMU forwarding - Page Fault Interception Framework");
 
-#define PCIEM_PCI_VENDOR_ID 0x1F0C
-#define PCIEM_PCI_DEVICE_ID 0x0001
-#define PCIEM_BAR0_SIZE (64 * 1024)
 #define DRIVER_NAME "pciem"
 #define CTRL_DEVICE_NAME "pciem_ctrl"
 #define PCIEM_IOCTL_MAGIC 0xAF
 #define PCIEM_IOCTL_GET_BAR0 _IOR(PCIEM_IOCTL_MAGIC, 1, struct virt_bar_info)
-
-#define REG_CONTROL 0x00
-#define REG_STATUS 0x04
-#define REG_CMD 0x08
-#define REG_DATA 0x0C
-#define REG_RESULT_LO 0x10
-#define REG_RESULT_HI 0x14
-#define REG_DMA_SRC_LO 0x20
-#define REG_DMA_SRC_HI 0x24
-#define REG_DMA_DST_LO 0x28
-#define REG_DMA_DST_HI 0x2C
-#define REG_DMA_LEN 0x30
-
-#define CTRL_ENABLE BIT(0)
-#define CTRL_RESET BIT(1)
-#define CTRL_START BIT(2)
-#define STATUS_BUSY BIT(0)
-#define STATUS_DONE BIT(1)
-#define STATUS_ERROR BIT(2)
-
-#define CMD_ADD 0x01
-#define CMD_MULTIPLY 0x02
-#define CMD_CHECKSUM 0x03
-#define CMD_PROCESS_BUFFER 0x04
-#define CMD_EXECUTE_CMDBUF 0x05
-#define CMD_DMA_FRAME 0x06
 
 static int use_qemu_forwarding = 0;
 module_param(use_qemu_forwarding, int, 0644);
 MODULE_PARM_DESC(use_qemu_forwarding, "Use QEMU forwarding (1) or internal emulation (0)");
 static unsigned long pciem_force_phys = 0;
 module_param(pciem_force_phys, ulong, 0444);
-MODULE_PARM_DESC(pciem_force_phys, "Force use of this physical base for BAR0 (hex). Example: "
-                                   "pciem_force_phys=0x1bf4c0000");
+MODULE_PARM_DESC(pciem_force_phys, "Force use of this physical base for BAR0 (hex)");
 
 #define SHIM_DEVICE_NAME "pciem_shim"
 
@@ -93,98 +60,27 @@ struct shim_dma_read_op
 };
 #define PCIEM_SHIM_IOCTL_DMA_READ _IOWR(PCIEM_SHIM_IOC_MAGIC, 5, struct shim_dma_read_op)
 
-struct shim_req
-{
-    uint32_t id;
-    uint32_t type;
-    uint32_t size;
-    uint64_t addr;
-    uint64_t data;
-} __attribute__((packed));
-
-struct shim_resp
-{
-    uint32_t id;
-    uint64_t data;
-} __attribute__((packed));
-
-#define MAX_PENDING_REQS 32
-struct pending_req
-{
-    uint32_t id;
-    bool valid;
-    struct completion done;
-    uint64_t result;
-};
-
 struct virt_bar_info
 {
     u64 phys_start;
     u64 size;
 };
 
-enum pciem_map_type
-{
-    PCIEM_MAP_NONE = 0,
-    PCIEM_MAP_MEMREMAP,
-    PCIEM_MAP_IOREMAP_CACHE,
-    PCIEM_MAP_IOREMAP,
-    PCIEM_MAP_IOREMAP_WC,
-};
-
-struct pciem_host
-{
-    unsigned int msi_irq;
-    struct irq_work msi_irq_work;
-    unsigned int pending_msi_irq;
-    irqreturn_t (*drv_irq_handler)(int, void *);
-    struct pci_dev *protopciem_pdev;
-    struct pci_bus *root_bus;
-    u8 cfg[256];
-    struct resource *bar0_res;
-    struct mutex ctrl_lock;
-    bool pci_mem_res_owned;
-    u32 bar_base[6];
-    void __iomem *bar0_virt;
-    struct page *bar0_pages;
-    enum pciem_map_type bar0_map_type;
-    unsigned int bar0_order;
-    phys_addr_t bar0_phys;
-    struct resource *pci_mem_res;
-    resource_size_t carved_start, carved_end;
-    struct task_struct *emul_thread;
-    struct platform_device *pdev;
-    struct miscdevice vph_miscdev;
-
-    struct miscdevice shim_miscdev;
-    struct mutex shim_lock;
-    uint32_t next_id;
-    struct pending_req pending[MAX_PENDING_REQS];
-    wait_queue_head_t req_wait;
-    struct shim_req req_queue[MAX_PENDING_REQS];
-    int req_head, req_tail;
-    atomic_t proxy_count;
-    struct page *bar0_page;
-
-    u32 shadow_control;
-    u32 shadow_status;
-    u32 shadow_cmd;
-    u32 shadow_data;
-    u32 shadow_result_lo;
-    u32 shadow_result_hi;
-    u32 shadow_dma_src_lo;
-    u32 shadow_dma_src_hi;
-    u32 shadow_dma_dst_lo;
-    u32 shadow_dma_dst_hi;
-    u32 shadow_dma_len;
-
-    wait_queue_head_t cmd_done_wait;
-    atomic_t cmd_pending;
-};
-
 static struct pciem_host *g_vph;
+static struct pciem_device_ops *g_dev_ops;
 
-static void pciem_trigger_msi(struct pciem_host *v)
+void pciem_register_ops(struct pciem_device_ops *ops)
+{
+    if (!ops)
+    {
+        pr_err("Invalid pciem_device_ops provided!\n");
+        return;
+    }
+    g_dev_ops = ops;
+}
+EXPORT_SYMBOL(pciem_register_ops);
+
+void pciem_trigger_msi(struct pciem_host *v)
 {
     struct pci_dev *dev = v->protopciem_pdev;
     if (!dev || !dev->msi_enabled || !dev->irq)
@@ -196,6 +92,7 @@ static void pciem_trigger_msi(struct pciem_host *v)
     v->pending_msi_irq = dev->irq;
     irq_work_queue(&v->msi_irq_work);
 }
+EXPORT_SYMBOL(pciem_trigger_msi);
 
 static void pciem_msi_irq_work_func(struct irq_work *work)
 {
@@ -219,11 +116,6 @@ static bool req_queue_full(struct pciem_host *v)
 
 static void req_queue_put(struct pciem_host *v, struct shim_req *req)
 {
-    if (req_queue_full(v))
-    {
-        pr_warn("request queue full, dropping\n");
-        return;
-    }
     v->req_queue[v->req_tail] = *req;
     v->req_tail = (v->req_tail + 1) % MAX_PENDING_REQS;
     wake_up_interruptible(&v->req_wait);
@@ -235,13 +127,25 @@ static bool req_queue_get(struct pciem_host *v, struct shim_req *req)
         return false;
     *req = v->req_queue[v->req_head];
     v->req_head = (v->req_head + 1) % MAX_PENDING_REQS;
+    wake_up_interruptible(&v->req_wait_full);
     return true;
 }
 
 static uint32_t alloc_req_id(struct pciem_host *v)
 {
-    uint32_t id = v->next_id++;
-    int slot = id % MAX_PENDING_REQS;
+    uint32_t id;
+    int slot;
+
+    id = v->next_id++;
+    slot = id % MAX_PENDING_REQS;
+
+    if (v->pending[slot].valid)
+    {
+        pr_err("pciem: request slot %d is busy! (id %u). Out of request slots.\n", slot, id);
+        v->next_id--;
+        return (uint32_t)-1;
+    }
+
     v->pending[slot].id = id;
     v->pending[slot].valid = true;
     init_completion(&v->pending[slot].done);
@@ -262,7 +166,7 @@ static void complete_req(struct pciem_host *v, uint32_t id, uint64_t data)
     complete(&v->pending[slot].done);
 }
 
-static u64 pci_shim_read(u64 addr, u32 size)
+u64 pci_shim_read(u64 addr, u32 size)
 {
     struct pciem_host *v = g_vph;
     struct shim_req req;
@@ -274,8 +178,24 @@ static u64 pci_shim_read(u64 addr, u32 size)
         return 0xFFFFFFFFFFFFFFFFULL;
     mutex_lock(&v->shim_lock);
     id = alloc_req_id(v);
+    if (id == (uint32_t)-1)
+    {
+        mutex_unlock(&v->shim_lock);
+        pr_err("Read failed, no free slots\n");
+        return 0xFFFFFFFFFFFFFFFFULL;
+    }
     slot = id % MAX_PENDING_REQS;
     req.id = id;
+
+    while (req_queue_full(v))
+    {
+        mutex_unlock(&v->shim_lock);
+        pr_warn_once("pciem: shim read blocking, queue full\n");
+        if (wait_event_interruptible(v->req_wait_full, !req_queue_full(v)))
+            return 0xFFFFFFFFFFFFFFFFULL;
+        mutex_lock(&v->shim_lock);
+    }
+
     req.type = 1;
     req.size = size;
     req.addr = addr;
@@ -291,22 +211,49 @@ static u64 pci_shim_read(u64 addr, u32 size)
     result = v->pending[slot].result;
     return result;
 }
+EXPORT_SYMBOL(pci_shim_read);
 
-static void pci_shim_write(u64 addr, u64 data, u32 size)
+int pci_shim_write(u64 addr, u64 data, u32 size)
 {
     struct pciem_host *v = g_vph;
     struct shim_req req;
+
     if (!v || atomic_read(&v->proxy_count) == 0)
-        return;
+        return -ENODEV;
+
     mutex_lock(&v->shim_lock);
+
     req.id = alloc_req_id(v);
+    if (req.id == (uint32_t)-1)
+    {
+        pr_err("Write failed, no free slots\n");
+        mutex_unlock(&v->shim_lock);
+        return -EBUSY;
+    }
+
+    while (req_queue_full(v))
+    {
+        mutex_unlock(&v->shim_lock);
+        pr_warn_once("pciem: shim write blocking, queue full\n");
+        if (wait_event_interruptible(v->req_wait_full, !req_queue_full(v)))
+        {
+            complete_req(v, req.id, 0);
+            return -ERESTARTSYS;
+        }
+        mutex_lock(&v->shim_lock);
+    }
+
     req.type = 2;
     req.size = size;
     req.addr = addr;
     req.data = data;
+
     req_queue_put(v, &req);
+
     mutex_unlock(&v->shim_lock);
+    return 0;
 }
+EXPORT_SYMBOL(pci_shim_write);
 
 static int shim_open(struct inode *inode, struct file *file)
 {
@@ -375,8 +322,8 @@ static long shim_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     switch (cmd)
     {
     case PCIEM_SHIM_IOCTL_RAISE_IRQ:
-        atomic_set(&v->cmd_pending, 0);
-        wake_up_interruptible(&v->cmd_done_wait);
+        atomic_set(&v->proxy_irq_pending, 1);
+        wake_up_interruptible(&v->write_wait);
         break;
     case PCIEM_SHIM_IOCTL_LOWER_IRQ:
         break;
@@ -405,33 +352,38 @@ static long shim_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         else
         {
             size_t remaining = op.len;
-            u64 iova = op.host_phys_addr;
-            u64 user_vadd = op.user_buf_addr;
-            pr_info("pciem: Using IOMMU page-by-page copy for %zu bytes from IOVA "
-                    "0x%llx\n",
-                    remaining, iova);
+            __u64 user_buf_addr = op.user_buf_addr;
+            unsigned long iova = op.host_phys_addr;
+            pr_info("pciem: Using IOMMU path for %u bytes from IOVA 0x%lx\n", op.len, iova);
             while (remaining > 0)
             {
-                phys_addr_t pa_of_page;
-                void *page_va;
-                size_t page_offset = iova & ~PAGE_MASK;
-                size_t bytes_to_copy = min_t(size_t, PAGE_SIZE - page_offset, remaining);
-                pa_of_page = iommu_iova_to_phys(domain, iova & PAGE_MASK);
-                if (!pa_of_page)
+                phys_addr_t hpa;
+                void *kva;
+                size_t chunk_len;
+                hpa = iommu_iova_to_phys(domain, iova);
+                if (!hpa)
                 {
-                    pr_err("pciem: iommu_iova_to_phys failed for IOVA %llx\n", (iova & PAGE_MASK));
+                    pr_err("pciem: iommu_iova_to_phys failed for IOVA 0x%lx\n", iova);
                     return -EFAULT;
                 }
-                page_va = phys_to_virt(pa_of_page);
-                clflush_cache_range(page_va + page_offset, bytes_to_copy);
-                if (copy_to_user((void __user *)user_vadd, page_va + page_offset, bytes_to_copy))
+                chunk_len = min_t(size_t, remaining, PAGE_SIZE - (iova & ~PAGE_MASK));
+                kva = memremap(hpa, chunk_len, MEMREMAP_WB);
+                if (!kva)
                 {
-                    pr_err("pciem: copy_to_user failed (iommu path) at IOVA %llx\n", iova);
+                    pr_err("pciem: memremap failed for HPA %pa\n", &hpa);
+                    return -ENOMEM;
+                }
+                clflush_cache_range(kva, chunk_len);
+                if (copy_to_user((void __user *)user_buf_addr, kva, chunk_len))
+                {
+                    memunmap(kva);
+                    pr_err("pciem: copy_to_user failed (IOMMU path)\n");
                     return -EFAULT;
                 }
-                remaining -= bytes_to_copy;
-                iova += bytes_to_copy;
-                user_vadd += bytes_to_copy;
+                memunmap(kva);
+                remaining -= chunk_len;
+                user_buf_addr += chunk_len;
+                iova += chunk_len;
             }
         }
         break;
@@ -454,6 +406,7 @@ static const struct file_operations shim_fops = {
 };
 
 static const resource_size_t bar_sizes[6] = {PCIEM_BAR0_SIZE, 0, 0, 0, 0, 0};
+
 static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
     struct pciem_host *v = g_vph;
@@ -577,37 +530,100 @@ static struct pci_ops vph_pci_ops = {
 static void vph_fill_config(struct pciem_host *v)
 {
     memset(v->cfg, 0, sizeof(v->cfg));
-    *(u16 *)&v->cfg[0x00] = PCIEM_PCI_VENDOR_ID;
-    *(u16 *)&v->cfg[0x02] = PCIEM_PCI_DEVICE_ID;
-    *(u16 *)&v->cfg[0x04] = PCI_COMMAND_MEMORY;
-    *(u16 *)&v->cfg[0x06] = PCI_STATUS_CAP_LIST;
-    v->cfg[0x08] = 0x00;
-    v->cfg[0x09] = 0x00;
-    v->cfg[0x0a] = 0x40;
-    v->cfg[0x0b] = 0x0b;
-    v->cfg[0x0e] = 0x00;
-    v->cfg[PCI_CAPABILITY_LIST] = 0x50;
-    *(u32 *)&v->cfg[0x30] = 0x00000000;
-    v->cfg[0x3c] = 0x00;
-    v->cfg[0x3d] = 0x01;
-    v->cfg[0x50] = PCI_CAP_ID_MSI;
-    v->cfg[0x51] = 0x00;
-    *(u16 *)&v->cfg[0x52] = PCI_MSI_FLAGS_64BIT | PCI_MSI_FLAGS_MASKBIT | (1 << 7);
-    *(u32 *)&v->cfg[0x54] = 0x00000000;
-    *(u32 *)&v->cfg[0x58] = 0x00000000;
-    *(u16 *)&v->cfg[0x5C] = 0x0000;
-    *(u32 *)&v->cfg[0x60] = 0x00000000;
+    if (g_dev_ops && g_dev_ops->fill_config_space)
+    {
+        g_dev_ops->fill_config_space(v->cfg);
+    }
+    else
+    {
+        pr_err("pciem: no fill_config_space op provided!\n");
+        *(u16 *)&v->cfg[0x00] = PCI_VENDOR_ID_REDHAT;
+        *(u16 *)&v->cfg[0x02] = PCI_DEVICE_ID_RD890_IOMMU;
+    }
 }
+
+static vm_fault_t pciem_bar_fault(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct pciem_host *v = vma->vm_private_data;
+    unsigned long offset = vmf->address - vma->vm_start;
+    pgoff_t pgoff = offset >> PAGE_SHIFT;
+    unsigned long flags;
+
+    pr_info("Page fault at offset 0x%lx (page %lu)", offset, pgoff);
+
+    spin_lock_irqsave(&v->fault_lock, flags);
+
+    vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+
+    if (remap_pfn_range(vma, vmf->address & PAGE_MASK, (v->bar0_phys + (pgoff << PAGE_SHIFT)) >> PAGE_SHIFT, PAGE_SIZE,
+                        vma->vm_page_prot))
+    {
+        spin_unlock_irqrestore(&v->fault_lock, flags);
+        return VM_FAULT_SIGBUS;
+    }
+
+    atomic_set(&v->write_pending, 1);
+    wake_up_interruptible(&v->write_wait);
+
+    spin_unlock_irqrestore(&v->fault_lock, flags);
+
+    return VM_FAULT_NOPAGE;
+}
+
+static void pciem_bar_vm_open(struct vm_area_struct *vma)
+{
+    struct pciem_host *v = vma->vm_private_data;
+    unsigned long flags;
+
+    pr_info("pciem: VMA opened: %p\n", vma);
+
+    spin_lock_irqsave(&v->fault_lock, flags);
+    if (!v->tracked_vma)
+    {
+        v->tracked_vma = vma;
+        v->tracked_mm = vma->vm_mm;
+    }
+    spin_unlock_irqrestore(&v->fault_lock, flags);
+}
+
+static void pciem_bar_vm_close(struct vm_area_struct *vma)
+{
+    struct pciem_host *v = vma->vm_private_data;
+    unsigned long flags;
+
+    pr_info("pciem: VMA closing: %p\n", vma);
+
+    spin_lock_irqsave(&v->fault_lock, flags);
+    if (v->tracked_vma == vma)
+    {
+        v->tracked_vma = NULL;
+        v->tracked_mm = NULL;
+    }
+    spin_unlock_irqrestore(&v->fault_lock, flags);
+}
+
+static const struct vm_operations_struct pciem_bar_vm_ops = {
+    .fault = pciem_bar_fault,
+    .open = pciem_bar_vm_open,
+    .close = pciem_bar_vm_close,
+};
 
 static int vph_ctrl_mmap(struct file *file, struct vm_area_struct *vma)
 {
     struct pciem_host *v = g_vph;
     unsigned long size = vma->vm_end - vma->vm_start;
+
     if (!v || size > PCIEM_BAR0_SIZE)
         return -EINVAL;
-    vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+    vma->vm_page_prot = vm_get_page_prot(vma->vm_flags & ~VM_WRITE);
+    vma->vm_private_data = v;
+    vma->vm_ops = &pciem_bar_vm_ops;
+
     if (remap_pfn_range(vma, vma->vm_start, v->bar0_phys >> PAGE_SHIFT, size, vma->vm_page_prot))
         return -EAGAIN;
+
     return 0;
 }
 
@@ -651,217 +667,74 @@ static const struct file_operations vph_ctrl_fops = {
 static int vph_emulator_thread(void *arg)
 {
     struct pciem_host *v = arg;
+    bool driver_wrote, proxy_irq;
+
     if (!v || !v->bar0_virt)
     {
         pr_err("Emulator thread started but BAR0 is not mapped!");
         return -EINVAL;
     }
 
-    if (!use_qemu_forwarding)
+    if (!g_dev_ops || !g_dev_ops->init_emulation_state || !g_dev_ops->poll_device_state ||
+        !g_dev_ops->cleanup_emulation_state)
     {
-        pr_info("Emulation thread started (internal emulator)");
-        while (!kthread_should_stop())
-        {
-            u32 control;
-            memcpy(&control, v->bar0_virt + REG_CONTROL, sizeof(control));
-            if (control & CTRL_RESET)
-            {
-                memset_io(v->bar0_virt, 0, PCIEM_BAR0_SIZE);
-                msleep(1);
-                continue;
-            }
-            if (control & CTRL_START)
-            {
-                u32 cmd, data;
-                u64 result = 0;
-                bool error = false;
-                memcpy(&cmd, v->bar0_virt + REG_CMD, sizeof(cmd));
-                memcpy(&data, v->bar0_virt + REG_DATA, sizeof(data));
-                u32 bsy = STATUS_BUSY;
-                memcpy(v->bar0_virt + REG_STATUS, &bsy, sizeof(bsy));
-                msleep(1);
-                switch (cmd)
-                {
-                case CMD_ADD:
-                    result = data + 42;
-                    break;
-                case CMD_MULTIPLY:
-                    result = (u64)data * 3ULL;
-                    break;
-                case CMD_CHECKSUM:
-                    result = (u64)data ^ 0xABCD1234ULL;
-                    break;
-                case CMD_PROCESS_BUFFER:
-                    result = 0;
-                    break;
-                default:
-                    error = true;
-                    break;
-                }
-                u32 lo = (u32)(result & 0xFFFFFFFF);
-                u32 hi = (u32)(result >> 32);
-                memcpy(v->bar0_virt + REG_RESULT_LO, &lo, sizeof(lo));
-                memcpy(v->bar0_virt + REG_RESULT_HI, &hi, sizeof(hi));
-                u32 status;
-                memcpy(&status, v->bar0_virt + REG_STATUS, sizeof(status));
-                status &= ~STATUS_BUSY;
-                status |= STATUS_DONE;
-                if (error)
-                    status |= STATUS_ERROR;
-                memcpy(v->bar0_virt + REG_STATUS, &status, sizeof(status));
-                control &= ~CTRL_START;
-                memcpy(v->bar0_virt + REG_CONTROL, &control, sizeof(control));
-            }
-            msleep(1);
-        }
-        pr_info("Emulation thread (internal) stopped");
-        return 0;
+        pr_err("Emulator thread started but device ops are not fully registered!\n");
+        return -EINVAL;
     }
 
-    pr_info("Emulation thread started (QEMU forwarding mode)");
-    memset_io(v->bar0_virt, 0, PCIEM_BAR0_SIZE);
-    v->shadow_control = 0;
-    v->shadow_cmd = 0;
-    v->shadow_data = 0;
-    v->shadow_status = 0;
-    v->shadow_result_lo = 0;
-    v->shadow_result_hi = 0;
-    v->shadow_dma_src_lo = 0;
-    v->shadow_dma_src_hi = 0;
-    v->shadow_dma_dst_lo = 0;
-    v->shadow_dma_dst_hi = 0;
-    v->shadow_dma_len = 0;
+    if (g_dev_ops->init_emulation_state(v))
+    {
+        pr_err("Failed to init device emulation state\n");
+        return -ENOMEM;
+    }
+
+    pr_info("Emulation thread started (Generic Framework)");
 
     while (!kthread_should_stop())
     {
-        u32 mem_val;
-        int ret = wait_event_interruptible_timeout(
-            v->cmd_done_wait, atomic_read(&v->cmd_pending) == 0 || kthread_should_stop(), msecs_to_jiffies(100));
+        wait_event_interruptible_timeout(v->write_wait, (driver_wrote = atomic_xchg(&v->write_pending, 0)) ||
+                                                            (proxy_irq = atomic_xchg(&v->proxy_irq_pending, 0)) ||
+                                                            kthread_should_stop());
+
         if (kthread_should_stop())
             break;
-        if (ret < 0)
-            continue;
 
-        memcpy(&mem_val, v->bar0_virt + REG_CONTROL, sizeof(mem_val));
-        if (mem_val != v->shadow_control)
+        if (driver_wrote)
         {
-            if (mem_val & CTRL_RESET)
+            struct mm_struct *mm;
+            struct vm_area_struct *vma;
+            unsigned long flags;
+
+            spin_lock_irqsave(&v->fault_lock, flags);
+            mm = v->tracked_mm;
+            spin_unlock_irqrestore(&v->fault_lock, flags);
+
+            if (mm)
             {
-                pr_info("fwd: RESET detected");
-                memset_io(v->bar0_virt, 0, PCIEM_BAR0_SIZE);
-                v->shadow_control = 0;
-                v->shadow_cmd = 0;
-                v->shadow_data = 0;
-                v->shadow_status = 0;
-                v->shadow_result_lo = 0;
-                v->shadow_result_hi = 0;
-                v->shadow_dma_src_lo = 0;
-                v->shadow_dma_src_hi = 0;
-                v->shadow_dma_dst_lo = 0;
-                v->shadow_dma_dst_hi = 0;
-                v->shadow_dma_len = 0;
-                atomic_set(&v->cmd_pending, 0);
-                continue;
+                if (mmap_read_trylock(mm))
+                {
+                    spin_lock_irqsave(&v->fault_lock, flags);
+                    vma = v->tracked_vma;
+                    if (vma && vma->vm_mm == mm)
+                    {
+                        vma->vm_page_prot = vm_get_page_prot(vma->vm_flags & ~VM_WRITE);
+                        zap_vma_ptes(vma, vma->vm_start, vma->vm_end - vma->vm_start);
+                    }
+                    spin_unlock_irqrestore(&v->fault_lock, flags);
+                    mmap_read_unlock(mm);
+                }
+                else
+                {
+                    atomic_set(&v->write_pending, 1);
+                }
             }
-            pci_shim_write(REG_CONTROL, mem_val, 4);
-            v->shadow_control = mem_val;
         }
 
-        memcpy(&mem_val, v->bar0_virt + REG_CMD, sizeof(mem_val));
-        if (mem_val != v->shadow_cmd && mem_val != 0 && atomic_read(&v->cmd_pending) == 0)
-        {
-            u32 params[8];
-            pr_info("fwd: NEW CMD detected: 0x%x", mem_val);
-            atomic_set(&v->cmd_pending, 1);
-
-            memcpy(&params[0], v->bar0_virt + REG_CONTROL, sizeof(u32));
-            memcpy(&params[1], v->bar0_virt + REG_DATA, sizeof(u32));
-            memcpy(&params[2], v->bar0_virt + REG_DMA_SRC_LO, sizeof(u32));
-            memcpy(&params[3], v->bar0_virt + REG_DMA_SRC_HI, sizeof(u32));
-            memcpy(&params[4], v->bar0_virt + REG_DMA_DST_LO, sizeof(u32));
-            memcpy(&params[5], v->bar0_virt + REG_DMA_DST_HI, sizeof(u32));
-            memcpy(&params[6], v->bar0_virt + REG_DMA_LEN, sizeof(u32));
-
-            if (params[0] != v->shadow_control)
-            {
-                pci_shim_write(REG_CONTROL, params[0], 4);
-                v->shadow_control = params[0];
-            }
-            if (params[1] != v->shadow_data)
-            {
-                pci_shim_write(REG_DATA, params[1], 4);
-                v->shadow_data = params[1];
-            }
-            if (params[2] != v->shadow_dma_src_lo)
-            {
-                pci_shim_write(REG_DMA_SRC_LO, params[2], 4);
-                v->shadow_dma_src_lo = params[2];
-            }
-            if (params[3] != v->shadow_dma_src_hi)
-            {
-                pci_shim_write(REG_DMA_SRC_HI, params[3], 4);
-                v->shadow_dma_src_hi = params[3];
-            }
-            if (params[4] != v->shadow_dma_dst_lo)
-            {
-                pci_shim_write(REG_DMA_DST_LO, params[4], 4);
-                v->shadow_dma_dst_lo = params[4];
-            }
-            if (params[5] != v->shadow_dma_dst_hi)
-            {
-                pci_shim_write(REG_DMA_DST_HI, params[5], 4);
-                v->shadow_dma_dst_hi = params[5];
-            }
-            if (params[6] != v->shadow_dma_len)
-            {
-                pci_shim_write(REG_DMA_LEN, params[6], 4);
-                v->shadow_dma_len = params[6];
-            }
-
-            pci_shim_write(REG_CMD, mem_val, 4);
-            v->shadow_cmd = mem_val;
-            u32 bsy = STATUS_BUSY;
-            memcpy(v->bar0_virt + REG_STATUS, &bsy, sizeof(bsy));
-            v->shadow_status = STATUS_BUSY;
-
-            pr_info("fwd: Waiting for command completion...");
-            ret = wait_event_interruptible_timeout(
-                v->cmd_done_wait, atomic_read(&v->cmd_pending) == 0 || kthread_should_stop(), msecs_to_jiffies(5000));
-
-            if (kthread_should_stop())
-                break;
-            if (ret == 0)
-            {
-                pr_err("fwd: Command timeout!");
-                v->shadow_status = STATUS_ERROR | STATUS_DONE;
-                u32 err = STATUS_ERROR | STATUS_DONE;
-                memcpy(v->bar0_virt + REG_STATUS, &err, sizeof(err));
-                v->shadow_cmd = 0;
-                atomic_set(&v->cmd_pending, 0);
-                continue;
-            }
-            if (ret < 0)
-                continue;
-
-            pr_info("fwd: Command completed via IRQ");
-            u32 final_status, final_res_lo, final_res_hi;
-            final_status = (u32)pci_shim_read(REG_STATUS, 4);
-            final_res_lo = (u32)pci_shim_read(REG_RESULT_LO, 4);
-            final_res_hi = (u32)pci_shim_read(REG_RESULT_HI, 4);
-            pr_info("fwd: Got status=0x%x, res_lo=0x%x, res_hi=0x%x from QEMU", final_status, final_res_lo,
-                    final_res_hi);
-            memcpy(v->bar0_virt + REG_RESULT_LO, &final_res_lo, sizeof(final_res_lo));
-            memcpy(v->bar0_virt + REG_RESULT_HI, &final_res_hi, sizeof(final_res_hi));
-            wmb();
-            memcpy(v->bar0_virt + REG_STATUS, &final_status, sizeof(final_status));
-            v->shadow_result_lo = final_res_lo;
-            v->shadow_result_hi = final_res_hi;
-            v->shadow_status = final_status;
-            v->shadow_cmd = 0;
-            pciem_trigger_msi(v);
-        }
+        g_dev_ops->poll_device_state(v, proxy_irq);
     }
-    pr_info("Emulation (forwarding) thread stopped");
+
+    g_dev_ops->cleanup_emulation_state(v);
+    pr_info("Emulation (framework) thread stopped");
     return 0;
 }
 
@@ -873,6 +746,15 @@ static int __init pciem_init(void)
     LIST_HEAD(resources);
     int busnr = 1;
     int domain = 0;
+
+    pciem_device_plugin_init();
+
+    if (!g_dev_ops)
+    {
+        pr_err("pciem: No device logic plugin was registered!\n");
+        return -ENODEV;
+    }
+
     pr_info("init: pciem_hostbridge init (forwarding: %s)", use_qemu_forwarding ? "YES" : "NO");
     v = kzalloc(sizeof(*v), GFP_KERNEL);
     if (!v)
@@ -883,21 +765,26 @@ static int __init pciem_init(void)
     mutex_init(&v->ctrl_lock);
     v->pci_mem_res = NULL;
     v->bar0_map_type = PCIEM_MAP_NONE;
-    v->drv_irq_handler = NULL;
     mutex_init(&v->shim_lock);
     v->next_id = 0;
     memset(v->pending, 0, sizeof(v->pending));
     init_waitqueue_head(&v->req_wait);
+    init_waitqueue_head(&v->req_wait_full);
     v->req_head = v->req_tail = 0;
     atomic_set(&v->proxy_count, 0);
-    init_waitqueue_head(&v->cmd_done_wait);
-    atomic_set(&v->cmd_pending, 0);
+    spin_lock_init(&v->fault_lock);
+    atomic_set(&v->write_pending, 0);
+    atomic_set(&v->proxy_irq_pending, 0);
+    init_waitqueue_head(&v->write_wait);
+    v->device_private_data = NULL;
+
     v->pdev = platform_device_register_simple(DRIVER_NAME, -1, NULL, 0);
     if (IS_ERR(v->pdev))
     {
         rc = PTR_ERR(v->pdev);
         goto fail_free;
     }
+
 #define PCIEM_MAX_TRIES 16
     v->bar0_order = get_order(PCIEM_BAR0_SIZE);
     pr_info("init: preparing BAR0 physical memory (%u KB, order %u)", PCIEM_BAR0_SIZE / 1024, v->bar0_order);
@@ -1041,23 +928,22 @@ static int __init pciem_init(void)
         }
         v->bar0_virt = NULL;
     }
+
     vph_fill_config(v);
+
+    if (!g_dev_ops->setup_bars)
     {
-        struct resource_entry *entry;
-        if (!v->pci_mem_res)
-        {
-            pr_err("init: internal error: pci_mem_res is NULL\n");
-            rc = -EINVAL;
-            goto fail_res;
-        }
-        entry = resource_list_create_entry(v->pci_mem_res, 0);
-        if (!entry)
-        {
-            rc = -ENOMEM;
-            goto fail_res;
-        }
-        resource_list_add_tail(entry, &resources);
+        pr_err("pciem: no setup_bars op provided!\n");
+        rc = -EINVAL;
+        goto fail_res;
     }
+    rc = g_dev_ops->setup_bars(v, &resources);
+    if (rc)
+    {
+        pr_err("pciem: plugin setup_bars failed: %d\n", rc);
+        goto fail_res_list;
+    }
+
     while (pci_find_bus(domain, busnr))
     {
         busnr++;
@@ -1166,7 +1052,7 @@ static int __init pciem_init(void)
         rc = -ENOMEM;
         goto fail_misc_shim;
     }
-    pr_info("init: BAR0 mapped at %p for emulator (map_type=%d)", v->bar0_virt, v->bar0_map_type);
+    pr_info("init: BAR0 mapped at %px for emulator (map_type=%d)", v->bar0_virt, v->bar0_map_type);
     v->emul_thread = kthread_run(vph_emulator_thread, v, "vph_emulator");
     if (IS_ERR(v->emul_thread))
     {
@@ -1255,6 +1141,7 @@ static void __exit pciem_exit(void)
     }
     if (g_vph->pdev)
         platform_device_unregister(g_vph->pdev);
+
     kfree(g_vph);
     g_vph = NULL;
     pr_info("exit: done");

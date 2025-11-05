@@ -11,6 +11,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "pciem_device.h"
+
 struct ProtoPCIemMessage
 {
     uint8_t type;
@@ -281,7 +283,7 @@ int main(int argc, char **argv)
 
     while (1)
     {
-        int rc = poll(pfd, 2, 1000);
+        int rc = poll(pfd, 2, 1);
         if (rc < 0)
         {
             if (errno == EINTR)
@@ -351,6 +353,19 @@ int main(int argc, char **argv)
                         goto out;
                     }
                 }
+            }
+            else
+            {
+                struct shim_resp resp;
+                resp.id = req.id;
+                resp.data = 0;
+
+                if (writen(shim, &resp, sizeof(resp)) != sizeof(resp))
+                {
+                    perror("[PROXY] write shim resp (for write ack)");
+                    goto out;
+                }
+                printf("[PROXY] WRITE ack: id=%u\n", req.id);
             }
         }
 

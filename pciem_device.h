@@ -1,0 +1,33 @@
+#ifndef PCIEM_DEVICE_H
+#define PCIEM_DEVICE_H
+
+#define PCIEM_PCI_VENDOR_ID 0x1F0C
+#define PCIEM_PCI_DEVICE_ID 0x0001
+
+#define PCIEM_BAR0_SIZE (64 * 1024)
+
+#define REG_CONTROL 0x00
+#define REG_STATUS 0x04
+#define REG_CMD 0x08
+#define REG_DATA 0x0C
+#define REG_RESULT_LO 0x10
+#define REG_RESULT_HI 0x14
+#define REG_DMA_SRC_LO 0x20
+#define REG_DMA_SRC_HI 0x24
+#define REG_DMA_DST_LO 0x28
+#define REG_DMA_DST_HI 0x2C
+#define REG_DMA_LEN 0x30
+
+#define CTRL_RESET BIT(1)
+#define STATUS_BUSY BIT(0)
+#define STATUS_DONE BIT(1)
+#define STATUS_ERROR BIT(2)
+
+#define CMD_ADD 0x01
+#define CMD_MULTIPLY 0x02
+#define CMD_XOR 0x03
+#define CMD_PROCESS_BUFFER 0x04
+#define CMD_EXECUTE_CMDBUF 0x05
+#define CMD_DMA_FRAME 0x06
+
+#endif // PCIEM_DEVICE_H
