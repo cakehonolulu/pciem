@@ -8,7 +8,7 @@
 #include "qom/object.h"
 #include "ui/console.h"
 
-#include "pciem_device.h"
+#include "protopciem_device.h"
 
 #define TYPE_PROTOPCIEM_BACKEND "protopciem-backend"
 OBJECT_DECLARE_SIMPLE_TYPE(ProtoPCIemState, PROTOPCIEM_BACKEND)
@@ -40,7 +40,7 @@ typedef struct ProtoPciemMessage
     uint16_t reserved;
     uint64_t addr;
     uint64_t data;
-} QEMU_PACKED ProtoPciemMessage;
+} __attribute__((packed)) ProtoPciemMessage;
 
 #define FB_WIDTH 640
 #define FB_HEIGHT 480

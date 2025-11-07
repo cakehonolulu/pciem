@@ -6,22 +6,31 @@
 struct pciem_device_ops
 {
     /**
-     * @brief Fills the PCI config space.
-     * Called once during init.
+     * @brief Fills the PCI config space base fields (vendor/device ID, etc).
+     * Called once during init, BEFORE capability registration.
+     * PCIem handles capability list building dynamically.
      * @param cfg A 256-byte buffer to write config data to.
      */
     void (*fill_config_space)(u8 *cfg);
 
     /**
-     * @brief Sets up BAR resources.
-     * Called once during init. The framework allocates
-     * v->pci_mem_res for BAR0, but this op lets the
-     * plugin add more BARs.
+     * @brief Registers PCI capabilities for this device.
+     * Called once during init, AFTER fill_config_space.
+     * The plugin should call pciem_add_cap_* functions here.
      * @param v The pciem host.
-     * @param resources The list of resources to add to.
      * @return 0 on success.
      */
-    int (*setup_bars)(struct pciem_host *v, struct list_head *resources);
+    int (*register_capabilities)(struct pciem_host *v);
+
+    /**
+     * @brief Registers all BARs for this device.
+     * Called once during init, BEFORE memory allocation.
+     * The plugin MUST call pciem_register_bar() here for each
+     * BAR it needs. BAR0 is required for the control interface.
+     * @param v The pciem host.
+     * @return 0 on success.
+     */
+    int (*register_bars)(struct pciem_host *v);
 
     /**
      * @brief Allocate and initialize device-specific state.
@@ -40,8 +49,6 @@ struct pciem_device_ops
     /**
      * @brief Called periodically (on timeout) or on an event.
      * This function is the device's entire state machine.
-     * It MUST check for new commands by polling the BAR.
-     * It MUST check for command completions if proxy_irq_fired is true.
      *
      * @param v The pciem host.
      * @param proxy_irq_fired True if this poll was triggered by

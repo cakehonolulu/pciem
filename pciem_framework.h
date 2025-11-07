@@ -46,6 +46,39 @@ enum pciem_map_type
     PCIEM_MAP_IOREMAP_WC,
 };
 
+struct pciem_vma_tracking
+{
+    struct vm_area_struct *vma;
+    struct mm_struct *mm;
+    int bar_index;
+    struct list_head list;
+};
+
+struct pciem_bar_info
+{
+    resource_size_t size;
+    u32 flags;
+    bool intercept_page_faults;
+
+    u32 base_addr_val;
+
+    struct resource *res;
+
+    struct resource *allocated_res;
+    void __iomem *virt_addr;
+    struct page *pages;
+    phys_addr_t phys_addr;
+    enum pciem_map_type map_type;
+    unsigned int order;
+    bool mem_owned_by_framework;
+
+    resource_size_t carved_start;
+    resource_size_t carved_end;
+
+    struct list_head vma_list;
+    spinlock_t vma_lock;
+};
+
 struct pciem_host
 {
     unsigned int msi_irq;
@@ -54,17 +87,10 @@ struct pciem_host
     struct pci_dev *protopciem_pdev;
     struct pci_bus *root_bus;
     u8 cfg[256];
-    struct resource *bar0_res;
     struct mutex ctrl_lock;
-    bool pci_mem_res_owned;
-    u32 bar_base[6];
-    void __iomem *bar0_virt;
-    struct page *bar0_pages;
-    enum pciem_map_type bar0_map_type;
-    unsigned int bar0_order;
-    phys_addr_t bar0_phys;
-    struct resource *pci_mem_res;
-    resource_size_t carved_start, carved_end;
+
+    struct pciem_bar_info bars[PCI_STD_NUM_BARS];
+
     struct task_struct *emul_thread;
     struct platform_device *pdev;
     struct miscdevice vph_miscdev;
@@ -88,33 +114,18 @@ struct pciem_host
     wait_queue_head_t write_wait;
 
     void *device_private_data;
+
+    struct pciem_cap_manager *cap_mgr;
+
+    resource_size_t total_carved_start;
+    resource_size_t total_carved_end;
+    resource_size_t next_carve_offset;
 };
 
-/**
- * @brief Triggers a virtual MSI interrupt for the guest driver.
- * To be called by the plugin from its handle_proxy_irq callback.
- */
 void pciem_trigger_msi(struct pciem_host *v);
-
-/**
- * @brief Sends a synchronous read request to the QEMU proxy.
- * To be called by the plugin.
- * @return The 64-bit value read from QEMU.
- */
 u64 pci_shim_read(u64 addr, u32 size);
-
-/**
- * @brief Sends a synchronous write request to the QEMU proxy.
- * To be called by the plugin.
- * @return 0 on success, < 0 on error.
- */
 int pci_shim_write(u64 addr, u64 data, u32 size);
-
-/**
- * @brief Called by the framework during init.
- * The plugin (pciem_device_logic.c) MUST define this function
- * and call pciem_register_ops() inside it.
- */
+int pciem_register_bar(struct pciem_host *v, int bar_num, resource_size_t size, u32 flags, bool intercept_faults);
 void __init pciem_device_plugin_init(void);
 
 #endif /* PCIEM_FRAMEWORK_H */

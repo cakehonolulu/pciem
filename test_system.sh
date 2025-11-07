@@ -35,7 +35,7 @@ sudo rmmod pciem 2>/dev/null || true
 if [[ "$1" == "forwarding" ]]; then
     log_info "Loading pciem in QEMU Forwarding mode"
     /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 pciem.ko
-    sudo insmod pciem.ko use_qemu_forwarding=1 pciem_force_phys=0x700000000
+    sudo insmod pciem.ko use_qemu_forwarding=1 pciem_phys_regions="bar0:0x1bf000000:0x10000,bar2:0x1bf100000:0x100000"
 else
     log_info "Loading pciem in default (internal emulation) mode"
     /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 pciem.ko

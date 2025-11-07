@@ -8,10 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <time.h>
 #include <unistd.h>
-
-#include "pciem_device.h"
 
 struct ProtoPCIemMessage
 {
@@ -70,7 +67,9 @@ static int connect_socket(const char *path)
 {
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s < 0)
+    {
         return -1;
+    }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -90,11 +89,15 @@ static int readn(int fd, void *buf, size_t n)
     {
         ssize_t m = read(fd, ((char *)buf) + r, n - r);
         if (m == 0)
+        {
             return 0;
+        }
         if (m < 0)
         {
             if (errno == EINTR)
+            {
                 continue;
+            }
             return -1;
         }
         r += m;
@@ -111,7 +114,9 @@ static int writen(int fd, const void *buf, size_t n)
         if (m <= 0)
         {
             if (errno == EINTR)
+            {
                 continue;
+            }
             return -1;
         }
         w += m;
@@ -130,7 +135,9 @@ static int handle_dma_read(int sock, int shim, struct ProtoPCIemMessage *inc)
 
     uint32_t aligned_len = (len + 7) & ~7;
     if (aligned_len == 0)
+    {
         return 0;
+    }
 
     char *buf = malloc(aligned_len);
     if (!buf)

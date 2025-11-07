@@ -3,7 +3,10 @@ PWD := $(shell pwd)
 
 CC = x86_64-linux-gnu-gcc
 
-pciem-objs := pciem_framework.o pciem_device_logic.o
+pciem-objs := pciem_framework.o \
+              pciem_capabilities.o \
+              pciem_dma.o \
+              protopciem_device.o
 
 obj-m += pciem.o
 obj-m += protopciem_driver.o
