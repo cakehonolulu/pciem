@@ -14,7 +14,7 @@
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("cakehonolulu (cakehonolulu@protonmail.com)");
 MODULE_DESCRIPTION("ProtoPCIem Driver");
 

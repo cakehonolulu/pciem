@@ -386,7 +386,8 @@ void pciem_build_config_space(struct pciem_host *v)
             u16 caps = 0;
             u8 pos = 0;
 
-            cfg[pos++] = 0x1B cfg[pos++] = next_ptr;
+            cfg[pos++] = 0x1B;
+            cfg[pos++] = next_ptr;
 
             if (pasid->execute_permission)
             {

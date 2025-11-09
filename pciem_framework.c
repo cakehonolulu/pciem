@@ -30,7 +30,7 @@
 #include "pciem_framework.h"
 #include "pciem_ops.h"
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("cakehonolulu (cakehonolulu@protonmail.com)");
 MODULE_DESCRIPTION("Synthetic PCIe device with QEMU forwarding - Multi-BAR Page Fault Framework");
 
