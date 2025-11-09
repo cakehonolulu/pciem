@@ -55,7 +55,7 @@ To brief what PCIem is: a framework for developing and testing PCIe device drive
 
 - **BAR Support**: Register and manage up to 6 Base Address Registers
 - **Page Fault Interception**: No polling! Purely event-based (At the cost of trapping accesses; no race conditions!)
-- **IEQ/MSI/MSI-X Support**: Full interrupt support!
+- **Legacy IRQ/MSI/MSI-X Support**: Full interrupt support!
 - **PCI Capability Framework**: Modular capabilities system (Linked-list underneath)
 - **DMA System**: IOMMU-aware DMA operations (Preliminary atomic memory operations support!)
 
@@ -138,6 +138,7 @@ The proxy should run in the background doing the communication between QEMU and 
 ## License
 
 Dual MIT/GPLv2 (pciem_framework.c and protopciem_driver.c)
+
 MIT (Rest)
 
 ## References
