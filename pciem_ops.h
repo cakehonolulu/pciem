@@ -57,10 +57,4 @@ struct pciem_device_ops
     void (*poll_device_state)(struct pciem_host *v, bool proxy_irq_fired);
 };
 
-/**
- * @brief Registration function exported by the framework.
- * The plugin MUST call this from pciem_device_plugin_init().
- */
-void pciem_register_ops(struct pciem_device_ops *ops);
-
 #endif /* PCIEM_OPS_H */

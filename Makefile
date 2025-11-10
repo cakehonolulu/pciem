@@ -5,10 +5,12 @@ CC = x86_64-linux-gnu-gcc
 
 pciem-objs := pciem_framework.o \
               pciem_capabilities.o \
-              pciem_dma.o \
-              protopciem_device.o
+              pciem_dma.o
+
+protopciem-device-objs := protopciem_device.o
 
 obj-m += pciem.o
+obj-m += protopciem_device.o
 obj-m += protopciem_driver.o
 
 PROXY_SRC = pciem_uproxy.c

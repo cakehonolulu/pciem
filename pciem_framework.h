@@ -122,10 +122,13 @@ struct pciem_host
     resource_size_t next_carve_offset;
 };
 
+struct pciem_device_ops;
+
 void pciem_trigger_msi(struct pciem_host *v);
 u64 pci_shim_read(u64 addr, u32 size);
 int pci_shim_write(u64 addr, u64 data, u32 size);
 int pciem_register_bar(struct pciem_host *v, int bar_num, resource_size_t size, u32 flags, bool intercept_faults);
-void __init pciem_device_plugin_init(void);
+int pciem_register_ops(struct pciem_device_ops *ops);
+void pciem_unregister_ops(struct pciem_device_ops *ops);
 
 #endif /* PCIEM_FRAMEWORK_H */

@@ -3,10 +3,15 @@
 #include <linux/pci.h>
 #include <linux/pci_regs.h>
 #include <linux/slab.h>
+#include <linux/module.h>
 
 #include "pciem_capabilities.h"
 #include "pciem_ops.h"
 #include "protopciem_device.h"
+
+MODULE_LICENSE("Dual MIT/GPL");
+MODULE_AUTHOR("cakehonolulu (cakehonolulu@protonmail.com)");
+MODULE_DESCRIPTION("ProtoPCIem Device Plugin for PCIem Framework");
 
 struct proto_device_state
 {
@@ -77,6 +82,11 @@ static void proto_poll_state(struct pciem_host *v, bool proxy_irq_fired)
     if (!s)
     {
         pr_err("proto_poll_state: no private state!\n");
+        return;
+    }
+
+    if (atomic_read(&v->proxy_count) == 0)
+    {
         return;
     }
 
@@ -240,8 +250,26 @@ static struct pciem_device_ops my_device_ops = {
     .poll_device_state = proto_poll_state,
 };
 
-void __init pciem_device_plugin_init(void)
+static int __init proto_plugin_init(void)
 {
-    pr_info("Registering ProtoPCIem device logic...\n");
-    pciem_register_ops(&my_device_ops);
+    int rc;
+    pr_info("Registering ProtoPCIem device logic in pciem...\n");
+
+    rc = pciem_register_ops(&my_device_ops);
+    if (rc)
+    {
+        pr_err("Failed to register with pciem: %d\n", rc);
+        pr_err("Please ensure the 'pciem' module is loaded first.\n");
+    }
+    return rc;
 }
+
+static void __exit proto_plugin_exit(void)
+{
+    pr_info("Unregistering ProtoPCIem device logic from pciem...\n");
+    pciem_unregister_ops(&my_device_ops);
+    pr_info("ProtoPCIem device logic unregistered.\n");
+}
+
+module_init(proto_plugin_init);
+module_exit(proto_plugin_exit);

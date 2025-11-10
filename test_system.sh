@@ -29,8 +29,11 @@ make clean
 make modules
 make proxy
 
-sudo rmmod sample_pci_driver 2>/dev/null || true
+log_info "Unloading all related modules..."
+sudo rmmod protopciem_driver 2>/dev/null || true
+sudo rmmod protopciem_device 2>/dev/null || true
 sudo rmmod pciem 2>/dev/null || true
+sleep 1
 
 if [[ "$1" == "forwarding" ]]; then
     log_info "Loading pciem in QEMU Forwarding mode"
@@ -42,6 +45,19 @@ else
     sudo insmod pciem.ko
 fi
 sleep 1
+
+log_info "Loading ProtoPCIem device plugin..."
+sudo insmod protopciem_device.ko
+sleep 1
+
+if ! check_module pciem; then
+    log_error "Failed to load pciem framework"
+    exit 1
+fi
+if ! check_module protopciem_device; then
+    log_error "Failed to load protopciem_device plugin"
+    exit 1
+fi
 
 if ! lspci -d 1f0c:0001 &>/dev/null; then
 log_error "Virtual PCI device not found!"
