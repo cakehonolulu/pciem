@@ -137,7 +137,7 @@ The proxy should run in the background doing the communication between QEMU and 
 
 ## License
 
-Dual MIT/GPLv2 (pciem_framework.c, protopciem_device.c and protopciem_driver.c)
+Dual MIT/GPLv2 (pciem_framework.c and protopciem_driver.c)
 
 MIT (Rest)
 
