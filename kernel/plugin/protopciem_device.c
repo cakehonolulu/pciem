@@ -296,7 +296,6 @@ static void proto_poll_state(struct pciem_host *v, bool proxy_irq_fired)
 
         iowrite32(s->shadow_result_lo, v->bars[0].virt_addr + REG_RESULT_LO);
         iowrite32(s->shadow_result_hi, v->bars[0].virt_addr + REG_RESULT_HI);
-        wmb();
         iowrite32(s->shadow_status, v->bars[0].virt_addr + REG_STATUS);
 
         pciem_trigger_msi(v);

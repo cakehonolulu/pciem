@@ -71,7 +71,6 @@ int pciem_dma_read_from_guest(struct pciem_host *v, u64 guest_iova, void *dst, s
             pr_err("pciem: memremap failed (no-iommu) for phys %pa len %zu\n", &real_phys_addr, len);
             return -EFAULT;
         }
-        clflush_cache_range(kernel_va, len);
         memcpy(dst_buf, kernel_va, len);
         memunmap(kernel_va);
         return 0;
@@ -101,7 +100,6 @@ int pciem_dma_read_from_guest(struct pciem_host *v, u64 guest_iova, void *dst, s
             return -ENOMEM;
         }
 
-        clflush_cache_range(kva, chunk_len);
         memcpy(dst_buf, kva, chunk_len);
         memunmap(kva);
 
@@ -155,7 +153,6 @@ int pciem_dma_write_to_guest(struct pciem_host *v, u64 guest_iova, const void *s
         }
 
         memcpy(kva, (u8 *)src + offset, chunk_len);
-        clflush_cache_range(kva, chunk_len);
         memunmap(kva);
 
         offset += chunk_len;
@@ -242,7 +239,6 @@ static u64 do_atomic_op(struct pciem_host *v, u64 guest_iova, u8 op_type, u64 op
         break;
     }
 
-    clflush_cache_range(kva, 8);
     memunmap(kva);
 
     return old_val;

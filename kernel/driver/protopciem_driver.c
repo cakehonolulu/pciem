@@ -155,7 +155,6 @@ static int pci_execute_command(struct pci_device *adev, u32 cmd, u32 data, u64 *
         pci_write_reg(adev, REG_DATA, data);
     }
     pci_write_reg(adev, REG_CONTROL, CTRL_ENABLE);
-    wmb();
     pci_write_reg(adev, REG_CMD, cmd);
     if (adev->irq)
     {
@@ -273,7 +272,6 @@ static ssize_t protopciem_write(struct file *file, const char __user *buf, size_
     pci_write_reg64(adev, REG_DMA_SRC_LO, adev->cmdbuf_phys);
     pci_write_reg64(adev, REG_DMA_DST_LO, 0);
     pci_write_reg(adev, REG_DMA_LEN, (u32)count);
-    wmb();
     ret = pci_execute_command(adev, CMD_EXECUTE_CMDBUF, 0, &result);
     if (ret)
     {
@@ -312,8 +310,6 @@ static long protopciem_ioctl(struct file *file, unsigned int cmd, unsigned long 
         pci_write_reg64(adev, REG_DMA_SRC_LO, frame_phys_addr);
         pci_write_reg64(adev, REG_DMA_DST_LO, 0);
         pci_write_reg(adev, REG_DMA_LEN, (u32)FB_SIZE);
-
-        wmb();
 
         ret = pci_execute_command(adev, CMD_DMA_FRAME, 0, &result);
         if (ret)
