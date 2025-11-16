@@ -4,6 +4,7 @@
 #include "pciem_framework.h"
 #include <linux/pci_regs.h>
 #include <linux/slab.h>
+#include <linux/unaligned.h>
 
 static u8 msi_cap_size(struct pciem_cap_msi_config *cfg)
 {
@@ -262,26 +263,26 @@ void pciem_build_config_space(struct pciem_host *v)
             }
 
             control |= (msi->num_vectors_log2 << 1);
-            *(u16 *)&cfg[pos] = control;
+            put_unaligned_le16(control, &cfg[pos]);
             pos += 2;
 
-            *(u32 *)&cfg[pos] = 0;
+            put_unaligned_le32(0, &cfg[pos]);
             pos += 4;
 
             if (msi->has_64bit)
             {
-                *(u32 *)&cfg[pos] = 0;
+                put_unaligned_le32(0, &cfg[pos]);
                 pos += 4;
             }
 
-            *(u16 *)&cfg[pos] = 0;
+            put_unaligned_le16(0, &cfg[pos]);
             pos += 2;
 
             if (msi->has_per_vector_masking)
             {
-                *(u32 *)&cfg[pos] = 0;
+                put_unaligned_le32(0, &cfg[pos]);
                 pos += 4;
-                *(u32 *)&cfg[pos] = 0;
+                put_unaligned_le32(0, &cfg[pos]);
             }
             break;
         }
@@ -293,13 +294,13 @@ void pciem_build_config_space(struct pciem_host *v)
             cfg[pos++] = PCI_CAP_ID_MSIX;
             cfg[pos++] = next_ptr;
 
-            *(u16 *)&cfg[pos] = (msix->table_size - 1) & 0x7FF;
+            put_unaligned_le16((msix->table_size - 1) & 0x7FF, &cfg[pos]);
             pos += 2;
 
-            *(u32 *)&cfg[pos] = (msix->table_offset & ~0x7) | (msix->bar_index & 0x7);
+            put_unaligned_le32((msix->table_offset & ~0x7) | (msix->bar_index & 0x7), &cfg[pos]);
             pos += 4;
 
-            *(u32 *)&cfg[pos] = (msix->pba_offset & ~0x7) | (msix->bar_index & 0x7);
+            put_unaligned_le32((msix->pba_offset & ~0x7) | (msix->bar_index & 0x7), &cfg[pos]);
             break;
         }
 
@@ -324,10 +325,10 @@ void pciem_build_config_space(struct pciem_host *v)
             {
                 pmc |= PCI_PM_CAP_PME_D0 | PCI_PM_CAP_PME_D3hot | PCI_PM_CAP_PME_D3cold;
             }
-            *(u16 *)&cfg[pos] = pmc;
+            put_unaligned_le16(pmc, &cfg[pos]);
             pos += 2;
 
-            *(u16 *)&cfg[pos] = 0;
+            put_unaligned_le16(0, &cfg[pos]);
             pos += 2;
 
             cfg[pos++] = 0;
@@ -342,19 +343,19 @@ void pciem_build_config_space(struct pciem_host *v)
             cfg[pos++] = PCI_CAP_ID_EXP;
             cfg[pos++] = next_ptr;
 
-            *(u16 *)&cfg[pos] = (pcie->device_type << 4) | 2;
+            put_unaligned_le16((pcie->device_type << 4) | 2, &cfg[pos]);
             pos += 2;
 
-            *(u32 *)&cfg[pos] = 0x00008000;
+            put_unaligned_le32(0x00008000, &cfg[pos]);
             pos += 4;
 
-            *(u32 *)&cfg[pos] = 0;
+            put_unaligned_le32(0, &cfg[pos]);
             pos += 4;
 
-            *(u32 *)&cfg[pos] = (pcie->link_speed & 0xF) | ((pcie->link_width & 0x3F) << 4);
+            put_unaligned_le32((pcie->link_speed & 0xF) | ((pcie->link_width & 0x3F) << 4), &cfg[pos]);
             pos += 4;
 
-            *(u32 *)&cfg[pos] = (pcie->link_speed & 0xF) | ((pcie->link_width & 0x3F) << 4) << 16;
+            put_unaligned_le32(((pcie->link_speed & 0xF) | ((pcie->link_width & 0x3F) << 4)) << 16, &cfg[pos]);
             pos += 4;
 
             memset(&cfg[pos], 0, 60 - pos);
@@ -372,7 +373,7 @@ void pciem_build_config_space(struct pciem_host *v)
 
             cfg[pos++] = 0;
 
-            *(u16 *)&cfg[pos] = vsec->vendor_id;
+            put_unaligned_le16(vsec->vendor_id, &cfg[pos]);
             pos += 2;
 
             cfg[pos++] = vsec->vsec_id & 0xFF;
@@ -399,13 +400,13 @@ void pciem_build_config_space(struct pciem_host *v)
                 caps |= 0x04;
             }
             caps |= ((pasid->max_pasid_width - 1) << 8);
-            *(u16 *)&cfg[pos] = caps;
+            put_unaligned_le16(caps, &cfg[pos]);
             pos += 2;
 
-            *(u16 *)&cfg[pos] = 0;
+            put_unaligned_le16(0, &cfg[pos]);
             pos += 2;
 
-            *(u16 *)&cfg[pos] = 0;
+            put_unaligned_le16(0, &cfg[pos]);
             break;
         }
         }
