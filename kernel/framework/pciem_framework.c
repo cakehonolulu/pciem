@@ -448,69 +448,44 @@ static long shim_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             pr_err("pciem: DMA read shared failed: %d\n", ret);
             return ret;
         }
-        s break;
+        break;
     }
     case PCIEM_SHIM_IOCTL_DMA_READ: {
         struct shim_dma_read_op op;
-        struct iommu_domain *domain;
+        void *kbuf = NULL;
+        int ret;
+
         if (copy_from_user(&op, (void __user *)arg, sizeof(op)))
-        {
+            return -EFAULT;
+
+        if (op.len <= v->shared_buf_size) {
+            kbuf = v->shared_buf_vaddr;
+        } else {
+            kbuf = kmalloc(op.len, GFP_KERNEL);
+            if (!kbuf) {
+                pr_err("pciem: kmalloc failed for %u bytes\n", op.len);
+                return -ENOMEM;
+            }
+        }
+
+        ret = pciem_dma_read_from_guest(v, op.host_phys_addr, kbuf, op.len, 0);
+        if (ret < 0) {
+            pr_err("pciem: pciem_dma_read_from_guest failed: %d\n", ret);
+            if (kbuf != v->shared_buf_vaddr)
+                kfree(kbuf);
+            return ret;
+        }
+
+        if (copy_to_user((void __user *)op.user_buf_addr, kbuf, op.len)) {
+            pr_err("pciem: DMA read copy_to_user failed\n");
+            if (kbuf != v->shared_buf_vaddr)
+                kfree(kbuf);
             return -EFAULT;
         }
-        domain = iommu_get_domain_for_dev(&v->protopciem_pdev->dev);
-        if (!domain)
-        {
-            phys_addr_t real_phys_addr = op.host_phys_addr;
-            void *kernel_va = phys_to_virt(real_phys_addr);
-            if (!kernel_va)
-            {
-                pr_err("pciem: phys_to_virt failed (no-iommu path) for phys %llx\n", (u64)real_phys_addr);
-                return -EFAULT;
-            }
-            clflush_cache_range(kernel_va, op.len);
-            if (copy_to_user((void __user *)op.user_buf_addr, kernel_va, op.len))
-            {
-                pr_err("pciem: DMA read copy_to_user failed (no-iommu path)\n");
-                return -EFAULT;
-            }
-        }
-        else
-        {
-            size_t remaining = op.len;
-            __u64 user_buf_addr = op.user_buf_addr;
-            unsigned long iova = op.host_phys_addr;
-            pr_info("pciem: Using IOMMU path for %u bytes from IOVA 0x%lx\n", op.len, iova);
-            while (remaining > 0)
-            {
-                phys_addr_t hpa;
-                void *kva;
-                size_t chunk_len;
-                hpa = iommu_iova_to_phys(domain, iova);
-                if (!hpa)
-                {
-                    pr_err("pciem: iommu_iova_to_phys failed for IOVA 0x%lx\n", iova);
-                    return -EFAULT;
-                }
-                chunk_len = min_t(size_t, remaining, PAGE_SIZE - (iova & ~PAGE_MASK));
-                kva = memremap(hpa, chunk_len, MEMREMAP_WB);
-                if (!kva)
-                {
-                    pr_err("pciem: memremap failed for HPA %pa\n", &hpa);
-                    return -ENOMEM;
-                }
-                clflush_cache_range(kva, chunk_len);
-                if (copy_to_user((void __user *)user_buf_addr, kva, chunk_len))
-                {
-                    memunmap(kva);
-                    pr_err("pciem: copy_to_user failed (IOMMU path)\n");
-                    return -EFAULT;
-                }
-                memunmap(kva);
-                remaining -= chunk_len;
-                user_buf_addr += chunk_len;
-                iova += chunk_len;
-            }
-        }
+
+        if (kbuf != v->shared_buf_vaddr)
+            kfree(kbuf);
+
         break;
     }
     default:
