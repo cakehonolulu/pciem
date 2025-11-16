@@ -135,6 +135,8 @@ static int pci_execute_command(struct pci_device *adev, u32 cmd, u32 data, u64 *
     u32 status;
     int ret = 0;
     long timeout_jiffies;
+    u64 local_result;
+
     spin_lock_irqsave(&adev->lock, flags);
     if (adev->operation_pending)
     {
@@ -166,11 +168,16 @@ static int pci_execute_command(struct pci_device *adev, u32 cmd, u32 data, u64 *
             spin_lock_irqsave(&adev->lock, flags);
             adev->operation_pending = false;
             spin_unlock_irqrestore(&adev->lock, flags);
+            goto out;
         }
         else
         {
             pr_info("Command complete (IRQ mode)\n");
         }
+        spin_lock_irqsave(&adev->lock, flags);
+        local_result = adev->last_result;
+        spin_unlock_irqrestore(&adev->lock, flags);
+
         status = pci_read_reg(adev, REG_STATUS);
         if (status & STATUS_ERROR)
         {
@@ -209,9 +216,10 @@ static int pci_execute_command(struct pci_device *adev, u32 cmd, u32 data, u64 *
         spin_unlock_irqrestore(&adev->lock, flags);
     }
     pci_write_reg(adev, REG_CONTROL, CTRL_ENABLE);
+out:
     if (ret == 0)
     {
-        *result = adev->last_result;
+        *result = local_result;
     }
     return ret;
 }
