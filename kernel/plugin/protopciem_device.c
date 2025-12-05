@@ -19,12 +19,12 @@ MODULE_AUTHOR("cakehonolulu (cakehonolulu@protonmail.com)");
 MODULE_DESCRIPTION("ProtoPCIem Device Plugin for PCIem Framework");
 
 static void proto_fill_config(u8 *cfg);
-static int proto_register_capabilities(struct pciem_host *v);
-static int proto_register_bars(struct pciem_host *v);
-static int proto_init_state(struct pciem_host *v);
-static void proto_cleanup_state(struct pciem_host *v);
-static void proto_poll_state(struct pciem_host *v, bool proxy_irq_fired);
-static void proto_set_command_watchpoint(struct pciem_host *v, bool enable);
+static int proto_register_capabilities(struct pciem_root_complex *v);
+static int proto_register_bars(struct pciem_root_complex *v);
+static int proto_init_state(struct pciem_root_complex *v);
+static void proto_cleanup_state(struct pciem_root_complex *v);
+static void proto_poll_state(struct pciem_root_complex *v, bool proxy_irq_fired);
+static void proto_set_command_watchpoint(struct pciem_root_complex *v, bool enable);
 
 struct proto_device_state
 {
@@ -39,7 +39,7 @@ struct proto_device_state
     u32 shadow_dma_dst_lo;
     u32 shadow_dst_hi;
     u32 shadow_dma_len;
-    struct pciem_host *host;
+    struct pciem_root_complex *host;
     struct delayed_work watchpoint_work;
     int retries;
 };
@@ -56,7 +56,7 @@ static struct pciem_device_ops my_device_ops = {
 
 static void proto_watchpoint_handler(struct perf_event *bp, struct perf_sample_data *data, struct pt_regs *regs)
 {
-    struct pciem_host *v = (struct pciem_host *)bp->overflow_handler_context;
+    struct pciem_root_complex *v = (struct pciem_root_complex *)bp->overflow_handler_context;
 
     if (!v)
         return;
@@ -68,7 +68,7 @@ static void proto_watchpoint_handler(struct perf_event *bp, struct perf_sample_d
     wake_up_interruptible(&v->write_wait);
 }
 
-static void proto_set_command_watchpoint(struct pciem_host *v, bool enable)
+static void proto_set_command_watchpoint(struct pciem_root_complex *v, bool enable)
 {
     struct proto_device_state *s = v->device_private_data;
     if (!s)
@@ -170,7 +170,7 @@ static void proto_watchpoint_retry(struct work_struct *work)
     proto_set_command_watchpoint(s->host, true);
 }
 
-static int proto_init_state(struct pciem_host *v)
+static int proto_init_state(struct pciem_root_complex *v)
 {
     struct proto_device_state *s;
 
@@ -230,7 +230,7 @@ static int proto_init_state(struct pciem_host *v)
     return 0;
 }
 
-static void proto_cleanup_state(struct pciem_host *v)
+static void proto_cleanup_state(struct pciem_root_complex *v)
 {
     struct proto_device_state *s = v->device_private_data;
     cancel_delayed_work_sync(&s->watchpoint_work);
@@ -244,7 +244,7 @@ static void proto_cleanup_state(struct pciem_host *v)
     v->device_private_data = NULL;
 }
 
-static void proto_poll_state(struct pciem_host *v, bool proxy_irq_fired)
+static void proto_poll_state(struct pciem_root_complex *v, bool proxy_irq_fired)
 {
     struct proto_device_state *s = v->device_private_data;
     if (!s)
@@ -339,7 +339,7 @@ cmd_error:
         my_device_ops.set_command_watchpoint(v, true);
 }
 
-static int proto_register_capabilities(struct pciem_host *v)
+static int proto_register_capabilities(struct pciem_root_complex *v)
 {
     struct pciem_cap_msi_config msi_cfg = {.has_64bit = true, .has_per_vector_masking = true, .num_vectors_log2 = 0};
 
@@ -365,7 +365,7 @@ static void proto_fill_config(u8 *cfg)
     cfg[0x0e] = 0x00;
 }
 
-static int proto_register_bars(struct pciem_host *v)
+static int proto_register_bars(struct pciem_root_complex *v)
 {
     int ret;
     int i;

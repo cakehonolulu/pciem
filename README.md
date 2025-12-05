@@ -93,11 +93,11 @@ Device-specific logic is implemented via the `pciem_device_ops` interface:
 ```c
 struct pciem_device_ops {
     void (*fill_config_space)(u8 *cfg);
-    int (*register_capabilities)(struct pciem_host *v);
-    int (*register_bars)(struct pciem_host *v);
-    int (*init_emulation_state)(struct pciem_host *v);
-    void (*cleanup_emulation_state)(struct pciem_host *v);
-    void (*poll_device_state)(struct pciem_host *v, bool proxy_irq);
+    int (*register_capabilities)(struct pciem_root_complex *v);
+    int (*register_bars)(struct pciem_root_complex *v);
+    int (*init_emulation_state)(struct pciem_root_complex *v);
+    void (*cleanup_emulation_state)(struct pciem_root_complex *v);
+    void (*poll_device_state)(struct pciem_root_complex *v, bool proxy_irq);
 };
 ```
 

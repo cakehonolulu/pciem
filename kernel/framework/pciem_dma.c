@@ -8,7 +8,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
-static int translate_iova(struct pciem_host *v, u64 guest_iova, size_t len,
+static int translate_iova(struct pciem_root_complex *v, u64 guest_iova, size_t len,
                           phys_addr_t **phys_pages_out, int *num_pages)
 {
     struct iommu_domain *domain;
@@ -64,7 +64,7 @@ static int translate_iova(struct pciem_host *v, u64 guest_iova, size_t len,
     return 0;
 }
 
-int pciem_dma_read_from_guest(struct pciem_host *v, u64 guest_iova, void *dst, size_t len, u32 pasid)
+int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova, void *dst, size_t len, u32 pasid)
 {
     phys_addr_t *phys_pages = NULL;
     int num_pages = 0;
@@ -114,7 +114,7 @@ int pciem_dma_read_from_guest(struct pciem_host *v, u64 guest_iova, void *dst, s
 }
 EXPORT_SYMBOL(pciem_dma_read_from_guest);
 
-int pciem_dma_write_to_guest(struct pciem_host *v, u64 guest_iova, const void *src, size_t len, u32 pasid)
+int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova, const void *src, size_t len, u32 pasid)
 {
     phys_addr_t *phys_pages = NULL;
     int num_pages = 0;
@@ -162,7 +162,7 @@ int pciem_dma_write_to_guest(struct pciem_host *v, u64 guest_iova, const void *s
 }
 EXPORT_SYMBOL(pciem_dma_write_to_guest);
 
-static u64 do_atomic_op(struct pciem_host *v, u64 guest_iova, u8 op_type, u64 operand, u64 compare, u32 pasid)
+static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type, u64 operand, u64 compare, u32 pasid)
 {
     phys_addr_t phys_addr;
     void *kva;
@@ -257,43 +257,43 @@ static u64 do_atomic_op(struct pciem_host *v, u64 guest_iova, u8 op_type, u64 op
     return old_val;
 }
 
-u64 pciem_dma_atomic_fetch_add(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid)
+u64 pciem_dma_atomic_fetch_add(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid)
 {
     return do_atomic_op(v, guest_iova, PCIEM_ATOMIC_FETCH_ADD, val, 0, pasid);
 }
 EXPORT_SYMBOL(pciem_dma_atomic_fetch_add);
 
-u64 pciem_dma_atomic_fetch_sub(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid)
+u64 pciem_dma_atomic_fetch_sub(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid)
 {
     return do_atomic_op(v, guest_iova, PCIEM_ATOMIC_FETCH_SUB, val, 0, pasid);
 }
 EXPORT_SYMBOL(pciem_dma_atomic_fetch_sub);
 
-u64 pciem_dma_atomic_swap(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid)
+u64 pciem_dma_atomic_swap(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid)
 {
     return do_atomic_op(v, guest_iova, PCIEM_ATOMIC_SWAP, val, 0, pasid);
 }
 EXPORT_SYMBOL(pciem_dma_atomic_swap);
 
-u64 pciem_dma_atomic_cas(struct pciem_host *v, u64 guest_iova, u64 expected, u64 new_val, u32 pasid)
+u64 pciem_dma_atomic_cas(struct pciem_root_complex *v, u64 guest_iova, u64 expected, u64 new_val, u32 pasid)
 {
     return do_atomic_op(v, guest_iova, PCIEM_ATOMIC_CAS, new_val, expected, pasid);
 }
 EXPORT_SYMBOL(pciem_dma_atomic_cas);
 
-u64 pciem_dma_atomic_fetch_and(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid)
+u64 pciem_dma_atomic_fetch_and(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid)
 {
     return do_atomic_op(v, guest_iova, PCIEM_ATOMIC_FETCH_AND, val, 0, pasid);
 }
 EXPORT_SYMBOL(pciem_dma_atomic_fetch_and);
 
-u64 pciem_dma_atomic_fetch_or(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid)
+u64 pciem_dma_atomic_fetch_or(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid)
 {
     return do_atomic_op(v, guest_iova, PCIEM_ATOMIC_FETCH_OR, val, 0, pasid);
 }
 EXPORT_SYMBOL(pciem_dma_atomic_fetch_or);
 
-u64 pciem_dma_atomic_fetch_xor(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid)
+u64 pciem_dma_atomic_fetch_xor(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid)
 {
     return do_atomic_op(v, guest_iova, PCIEM_ATOMIC_FETCH_XOR, val, 0, pasid);
 }

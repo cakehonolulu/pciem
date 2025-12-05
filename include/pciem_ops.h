@@ -20,7 +20,7 @@ struct pciem_device_ops
      * @param v The pciem host.
      * @return 0 on success.
      */
-    int (*register_capabilities)(struct pciem_host *v);
+    int (*register_capabilities)(struct pciem_root_complex *v);
 
     /**
      * @brief Registers all BARs for this device.
@@ -30,7 +30,7 @@ struct pciem_device_ops
      * @param v The pciem host.
      * @return 0 on success.
      */
-    int (*register_bars)(struct pciem_host *v);
+    int (*register_bars)(struct pciem_root_complex *v);
 
     /**
      * @brief Allocate and initialize device-specific state.
@@ -38,13 +38,13 @@ struct pciem_device_ops
      * assign it to v->device_private_data.
      * @return 0 on success.
      */
-    int (*init_emulation_state)(struct pciem_host *v);
+    int (*init_emulation_state)(struct pciem_root_complex *v);
 
     /**
      * @brief Free device-specific state.
      * The plugin should kfree(v->device_private_data).
      */
-    void (*cleanup_emulation_state)(struct pciem_host *v);
+    void (*cleanup_emulation_state)(struct pciem_root_complex *v);
 
     /**
      * @brief Called periodically (on timeout) or on an event.
@@ -54,9 +54,9 @@ struct pciem_device_ops
      * @param proxy_irq_fired True if this poll was triggered by
      * a proxy IRQ, false otherwise (timeout or page fault).
      */
-    void (*poll_device_state)(struct pciem_host *v, bool proxy_irq_fired);
+    void (*poll_device_state)(struct pciem_root_complex *v, bool proxy_irq_fired);
 
-    void (*set_command_watchpoint)(struct pciem_host *v, bool enable);
+    void (*set_command_watchpoint)(struct pciem_root_complex *v, bool enable);
 };
 
 #endif /* PCIEM_OPS_H */

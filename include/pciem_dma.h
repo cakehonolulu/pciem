@@ -3,18 +3,18 @@
 
 #include <linux/types.h>
 
-struct pciem_host;
+struct pciem_root_complex;
 
-int pciem_dma_read_from_guest(struct pciem_host *v, u64 guest_iova, void *dst, size_t len, u32 pasid);
-int pciem_dma_write_to_guest(struct pciem_host *v, u64 guest_iova, const void *src, size_t len, u32 pasid);
+int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova, void *dst, size_t len, u32 pasid);
+int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova, const void *src, size_t len, u32 pasid);
 
-u64 pciem_dma_atomic_fetch_add(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid);
-u64 pciem_dma_atomic_fetch_sub(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid);
-u64 pciem_dma_atomic_swap(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid);
-u64 pciem_dma_atomic_cas(struct pciem_host *v, u64 guest_iova, u64 expected, u64 new_val, u32 pasid);
-u64 pciem_dma_atomic_fetch_and(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid);
-u64 pciem_dma_atomic_fetch_or(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid);
-u64 pciem_dma_atomic_fetch_xor(struct pciem_host *v, u64 guest_iova, u64 val, u32 pasid);
+u64 pciem_dma_atomic_fetch_add(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid);
+u64 pciem_dma_atomic_fetch_sub(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid);
+u64 pciem_dma_atomic_swap(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid);
+u64 pciem_dma_atomic_cas(struct pciem_root_complex *v, u64 guest_iova, u64 expected, u64 new_val, u32 pasid);
+u64 pciem_dma_atomic_fetch_and(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid);
+u64 pciem_dma_atomic_fetch_or(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid);
+u64 pciem_dma_atomic_fetch_xor(struct pciem_root_complex *v, u64 guest_iova, u64 val, u32 pasid);
 
 #define pciem_dma_read(v, iova, dst, len) pciem_dma_read_from_guest(v, iova, dst, len, 0)
 #define pciem_dma_write(v, iova, src, len) pciem_dma_write_to_guest(v, iova, src, len, 0)
