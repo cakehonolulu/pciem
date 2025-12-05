@@ -91,7 +91,7 @@ This "carves out" 2MB starting at physical address 0x1bf000000, basically markin
 Device-specific logic is implemented via the `pciem_device_ops` interface:
 
 ```c
-struct pciem_device_ops {
+struct pciem_epc_ops {
     void (*fill_config_space)(u8 *cfg);
     int (*register_capabilities)(struct pciem_root_complex *v);
     int (*register_bars)(struct pciem_root_complex *v);

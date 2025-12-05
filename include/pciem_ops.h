@@ -3,7 +3,7 @@
 
 #include "pciem_framework.h"
 
-struct pciem_device_ops
+struct pciem_epc_ops
 {
     /**
      * @brief Fills the PCI config space base fields (vendor/device ID, etc).

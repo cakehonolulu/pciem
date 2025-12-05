@@ -88,7 +88,7 @@ struct shim_dma_read_op
 #define PCIEM_SHIM_IOCTL_DMA_READ _IOWR(PCIEM_SHIM_IOC_MAGIC, 5, struct shim_dma_read_op)
 
 static struct pciem_root_complex *g_vph;
-static struct pciem_device_ops *g_dev_ops;
+static struct pciem_epc_ops *g_dev_ops;
 static DEFINE_MUTEX(pciem_registration_lock);
 
 static int parse_phys_regions(struct pciem_root_complex *v)
@@ -1428,7 +1428,7 @@ static void __exit pciem_exit(void)
     pr_info("exit: pciem framework done");
 }
 
-int pciem_register_ops(struct pciem_device_ops *ops)
+int pciem_register_ops(struct pciem_epc_ops *ops)
 {
     int rc = 0;
 
@@ -1484,7 +1484,7 @@ out_unlock:
 }
 EXPORT_SYMBOL(pciem_register_ops);
 
-void pciem_unregister_ops(struct pciem_device_ops *ops)
+void pciem_unregister_ops(struct pciem_epc_ops *ops)
 {
     mutex_lock(&pciem_registration_lock);
 

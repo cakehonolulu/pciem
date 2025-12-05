@@ -44,7 +44,7 @@ struct proto_device_state
     int retries;
 };
 
-static struct pciem_device_ops my_device_ops = {
+static struct pciem_epc_ops my_device_ops = {
     .fill_config_space = proto_fill_config,
     .register_capabilities = proto_register_capabilities,
     .register_bars = proto_register_bars,
