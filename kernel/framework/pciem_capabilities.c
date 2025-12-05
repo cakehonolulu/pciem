@@ -25,7 +25,7 @@ static u8 msi_cap_size(struct pciem_cap_msi_config *cfg)
     return size;
 }
 
-void pciem_init_cap_manager(struct pciem_host *v)
+void pciem_init_cap_manager(struct pciem_root_complex *v)
 {
     if (!v->cap_mgr)
     {
@@ -40,7 +40,7 @@ void pciem_init_cap_manager(struct pciem_host *v)
     }
 }
 
-void pciem_cleanup_cap_manager(struct pciem_host *v)
+void pciem_cleanup_cap_manager(struct pciem_root_complex *v)
 {
     int i;
 
@@ -61,7 +61,7 @@ void pciem_cleanup_cap_manager(struct pciem_host *v)
     v->cap_mgr = NULL;
 }
 
-int pciem_add_cap_msi(struct pciem_host *v, struct pciem_cap_msi_config *cfg)
+int pciem_add_cap_msi(struct pciem_root_complex *v, struct pciem_cap_msi_config *cfg)
 {
     struct pciem_cap_entry *cap;
 
@@ -88,7 +88,7 @@ int pciem_add_cap_msi(struct pciem_host *v, struct pciem_cap_msi_config *cfg)
 }
 EXPORT_SYMBOL(pciem_add_cap_msi);
 
-int pciem_add_cap_msix(struct pciem_host *v, struct pciem_cap_msix_config *cfg)
+int pciem_add_cap_msix(struct pciem_root_complex *v, struct pciem_cap_msix_config *cfg)
 {
     struct pciem_cap_entry *cap;
 
@@ -113,7 +113,7 @@ int pciem_add_cap_msix(struct pciem_host *v, struct pciem_cap_msix_config *cfg)
     return 0;
 }
 
-int pciem_add_cap_pm(struct pciem_host *v, struct pciem_cap_pm_config *cfg)
+int pciem_add_cap_pm(struct pciem_root_complex *v, struct pciem_cap_pm_config *cfg)
 {
     struct pciem_cap_entry *cap;
 
@@ -139,7 +139,7 @@ int pciem_add_cap_pm(struct pciem_host *v, struct pciem_cap_pm_config *cfg)
     return 0;
 }
 
-int pciem_add_cap_pcie(struct pciem_host *v, struct pciem_cap_pcie_config *cfg)
+int pciem_add_cap_pcie(struct pciem_root_complex *v, struct pciem_cap_pcie_config *cfg)
 {
     struct pciem_cap_entry *cap;
 
@@ -162,7 +162,7 @@ int pciem_add_cap_pcie(struct pciem_host *v, struct pciem_cap_pcie_config *cfg)
     return 0;
 }
 
-int pciem_add_cap_vsec(struct pciem_host *v, struct pciem_cap_vsec_config *cfg)
+int pciem_add_cap_vsec(struct pciem_root_complex *v, struct pciem_cap_vsec_config *cfg)
 {
     struct pciem_cap_entry *cap;
     u8 *data_copy;
@@ -195,7 +195,7 @@ int pciem_add_cap_vsec(struct pciem_host *v, struct pciem_cap_vsec_config *cfg)
     return 0;
 }
 
-int pciem_add_cap_pasid(struct pciem_host *v, struct pciem_cap_pasid_config *cfg)
+int pciem_add_cap_pasid(struct pciem_root_complex *v, struct pciem_cap_pasid_config *cfg)
 {
     struct pciem_cap_entry *cap;
 
@@ -221,7 +221,7 @@ int pciem_add_cap_pasid(struct pciem_host *v, struct pciem_cap_pasid_config *cfg
     return 0;
 }
 
-void pciem_build_config_space(struct pciem_host *v)
+void pciem_build_config_space(struct pciem_root_complex *v)
 {
     int i;
     struct pciem_cap_manager *mgr = v->cap_mgr;
@@ -413,7 +413,7 @@ void pciem_build_config_space(struct pciem_host *v)
     }
 }
 
-bool pciem_handle_cap_read(struct pciem_host *v, int where, int size, u32 *value)
+bool pciem_handle_cap_read(struct pciem_root_complex *v, int where, int size, u32 *value)
 {
     struct pciem_cap_manager *mgr = v->cap_mgr;
     int i;
@@ -507,7 +507,7 @@ bool pciem_handle_cap_read(struct pciem_host *v, int where, int size, u32 *value
     return false;
 }
 
-bool pciem_handle_cap_write(struct pciem_host *v, int where, int size, u32 value)
+bool pciem_handle_cap_write(struct pciem_root_complex *v, int where, int size, u32 value)
 {
     struct pciem_cap_manager *mgr = v->cap_mgr;
     int i;

@@ -112,20 +112,20 @@ struct pciem_cap_manager
     u8 next_offset;
 };
 
-struct pciem_host;
+struct pciem_root_complex;
 
-int pciem_add_cap_msi(struct pciem_host *v, struct pciem_cap_msi_config *cfg);
-int pciem_add_cap_msix(struct pciem_host *v, struct pciem_cap_msix_config *cfg);
-int pciem_add_cap_pm(struct pciem_host *v, struct pciem_cap_pm_config *cfg);
-int pciem_add_cap_pcie(struct pciem_host *v, struct pciem_cap_pcie_config *cfg);
-int pciem_add_cap_vsec(struct pciem_host *v, struct pciem_cap_vsec_config *cfg);
-int pciem_add_cap_pasid(struct pciem_host *v, struct pciem_cap_pasid_config *cfg);
+int pciem_add_cap_msi(struct pciem_root_complex *v, struct pciem_cap_msi_config *cfg);
+int pciem_add_cap_msix(struct pciem_root_complex *v, struct pciem_cap_msix_config *cfg);
+int pciem_add_cap_pm(struct pciem_root_complex *v, struct pciem_cap_pm_config *cfg);
+int pciem_add_cap_pcie(struct pciem_root_complex *v, struct pciem_cap_pcie_config *cfg);
+int pciem_add_cap_vsec(struct pciem_root_complex *v, struct pciem_cap_vsec_config *cfg);
+int pciem_add_cap_pasid(struct pciem_root_complex *v, struct pciem_cap_pasid_config *cfg);
 
-void pciem_init_cap_manager(struct pciem_host *v);
-void pciem_build_config_space(struct pciem_host *v);
-void pciem_cleanup_cap_manager(struct pciem_host *v);
+void pciem_init_cap_manager(struct pciem_root_complex *v);
+void pciem_build_config_space(struct pciem_root_complex *v);
+void pciem_cleanup_cap_manager(struct pciem_root_complex *v);
 
-bool pciem_handle_cap_read(struct pciem_host *v, int where, int size, u32 *value);
-bool pciem_handle_cap_write(struct pciem_host *v, int where, int size, u32 value);
+bool pciem_handle_cap_read(struct pciem_root_complex *v, int where, int size, u32 *value);
+bool pciem_handle_cap_write(struct pciem_root_complex *v, int where, int size, u32 value);
 
 #endif /* PCIEM_CAPABILITIES_H */

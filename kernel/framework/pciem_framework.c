@@ -87,11 +87,11 @@ struct shim_dma_read_op
 };
 #define PCIEM_SHIM_IOCTL_DMA_READ _IOWR(PCIEM_SHIM_IOC_MAGIC, 5, struct shim_dma_read_op)
 
-static struct pciem_host *g_vph;
+static struct pciem_root_complex *g_vph;
 static struct pciem_device_ops *g_dev_ops;
 static DEFINE_MUTEX(pciem_registration_lock);
 
-static int parse_phys_regions(struct pciem_host *v)
+static int parse_phys_regions(struct pciem_root_complex *v)
 {
     char *str, *token, *cur;
     int bar_num;
@@ -130,7 +130,7 @@ static int parse_phys_regions(struct pciem_host *v)
     return 0;
 }
 
-int pciem_register_bar(struct pciem_host *v, int bar_num, resource_size_t size, u32 flags, bool intercept_faults)
+int pciem_register_bar(struct pciem_root_complex *v, int bar_num, resource_size_t size, u32 flags, bool intercept_faults)
 {
     if (bar_num < 0 || bar_num >= PCI_STD_NUM_BARS)
     {
@@ -163,7 +163,7 @@ int pciem_register_bar(struct pciem_host *v, int bar_num, resource_size_t size, 
 }
 EXPORT_SYMBOL(pciem_register_bar);
 
-void pciem_trigger_msi(struct pciem_host *v)
+void pciem_trigger_msi(struct pciem_root_complex *v)
 {
     struct pci_dev *dev = v->protopciem_pdev;
     if (!dev || !dev->msi_enabled || !dev->irq)
@@ -179,7 +179,7 @@ EXPORT_SYMBOL(pciem_trigger_msi);
 
 static void pciem_msi_irq_work_func(struct irq_work *work)
 {
-    struct pciem_host *v = container_of(work, struct pciem_host, msi_irq_work);
+    struct pciem_root_complex *v = container_of(work, struct pciem_root_complex, msi_irq_work);
     unsigned int irq = v->pending_msi_irq;
     if (irq)
     {
@@ -187,24 +187,24 @@ static void pciem_msi_irq_work_func(struct irq_work *work)
     }
 }
 
-static bool req_queue_empty(struct pciem_host *v)
+static bool req_queue_empty(struct pciem_root_complex *v)
 {
     return v->req_head == v->req_tail;
 }
 
-static bool req_queue_full(struct pciem_host *v)
+static bool req_queue_full(struct pciem_root_complex *v)
 {
     return ((v->req_tail + 1) % MAX_PENDING_REQS) == v->req_head;
 }
 
-static void req_queue_put(struct pciem_host *v, struct shim_req *req)
+static void req_queue_put(struct pciem_root_complex *v, struct shim_req *req)
 {
     v->req_queue[v->req_tail] = *req;
     v->req_tail = (v->req_tail + 1) % MAX_PENDING_REQS;
     wake_up_interruptible(&v->req_wait);
 }
 
-static bool req_queue_get(struct pciem_host *v, struct shim_req *req)
+static bool req_queue_get(struct pciem_root_complex *v, struct shim_req *req)
 {
     if (req_queue_empty(v))
     {
@@ -216,7 +216,7 @@ static bool req_queue_get(struct pciem_host *v, struct shim_req *req)
     return true;
 }
 
-static uint32_t alloc_req_id(struct pciem_host *v)
+static uint32_t alloc_req_id(struct pciem_root_complex *v)
 {
     uint32_t id;
     int slot;
@@ -238,7 +238,7 @@ static uint32_t alloc_req_id(struct pciem_host *v)
     return id;
 }
 
-static void complete_req(struct pciem_host *v, uint32_t id, uint64_t data)
+static void complete_req(struct pciem_root_complex *v, uint32_t id, uint64_t data)
 {
     int slot = id % MAX_PENDING_REQS;
     if (!v->pending[slot].valid || v->pending[slot].id != id)
@@ -253,7 +253,7 @@ static void complete_req(struct pciem_host *v, uint32_t id, uint64_t data)
 
 u64 pci_shim_read(u64 addr, u32 size)
 {
-    struct pciem_host *v = g_vph;
+    struct pciem_root_complex *v = g_vph;
     struct shim_req req;
     uint32_t id;
     int slot;
@@ -304,7 +304,7 @@ EXPORT_SYMBOL(pci_shim_read);
 
 int pci_shim_write(u64 addr, u64 data, u32 size)
 {
-    struct pciem_host *v = g_vph;
+    struct pciem_root_complex *v = g_vph;
     struct shim_req req;
 
     if (!v || atomic_read(&v->proxy_count) == 0)
@@ -349,7 +349,7 @@ EXPORT_SYMBOL(pci_shim_write);
 static int shim_open(struct inode *inode, struct file *file)
 {
     struct miscdevice *miscdev = file->private_data;
-    struct pciem_host *v = container_of(miscdev, struct pciem_host, shim_miscdev);
+    struct pciem_root_complex *v = container_of(miscdev, struct pciem_root_complex, shim_miscdev);
     file->private_data = v;
     atomic_inc(&v->proxy_count);
     return 0;
@@ -357,14 +357,14 @@ static int shim_open(struct inode *inode, struct file *file)
 
 static int shim_release(struct inode *inode, struct file *file)
 {
-    struct pciem_host *v = file->private_data;
+    struct pciem_root_complex *v = file->private_data;
     atomic_dec(&v->proxy_count);
     return 0;
 }
 
 static ssize_t shim_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
-    struct pciem_host *v = file->private_data;
+    struct pciem_root_complex *v = file->private_data;
     struct shim_req req;
     if (wait_event_interruptible(v->req_wait, !req_queue_empty(v)))
     {
@@ -386,7 +386,7 @@ static ssize_t shim_read(struct file *file, char __user *buf, size_t count, loff
 
 static ssize_t shim_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
-    struct pciem_host *v = file->private_data;
+    struct pciem_root_complex *v = file->private_data;
     struct shim_resp resp;
     if (count != sizeof(resp))
     {
@@ -404,7 +404,7 @@ static ssize_t shim_write(struct file *file, const char __user *buf, size_t coun
 
 static unsigned int shim_poll(struct file *file, poll_table *wait)
 {
-    struct pciem_host *v = file->private_data;
+    struct pciem_root_complex *v = file->private_data;
     unsigned int mask = 0;
     poll_wait(file, &v->req_wait, wait);
     if (!req_queue_empty(v))
@@ -416,7 +416,7 @@ static unsigned int shim_poll(struct file *file, poll_table *wait)
 
 static long shim_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    struct pciem_host *v = file->private_data;
+    struct pciem_root_complex *v = file->private_data;
     if (!v->protopciem_pdev)
     {
         return -ENODEV;
@@ -496,7 +496,7 @@ static long shim_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 static int shim_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct pciem_host *v = file->private_data;
+    struct pciem_root_complex *v = file->private_data;
     unsigned long size = vma->vm_end - vma->vm_start;
 
     if (size > v->shared_buf_size)
@@ -522,7 +522,7 @@ static const struct file_operations shim_fops = {
 
 static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
-    struct pciem_host *v = g_vph;
+    struct pciem_root_complex *v = g_vph;
     u32 val = ~0U;
     if (!v || devfn != 0)
     {
@@ -611,7 +611,7 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, i
 
 static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
 {
-    struct pciem_host *v = g_vph;
+    struct pciem_root_complex *v = g_vph;
     if (!v)
     {
         return PCIBIOS_DEVICE_NOT_FOUND;
@@ -678,7 +678,7 @@ static struct pci_ops vph_pci_ops = {
     .write = vph_write_config,
 };
 
-static void vph_fill_config(struct pciem_host *v)
+static void vph_fill_config(struct pciem_root_complex *v)
 {
     memset(v->cfg, 0, sizeof(v->cfg));
     if (g_dev_ops && g_dev_ops->fill_config_space)
@@ -707,7 +707,7 @@ static void vph_fill_config(struct pciem_host *v)
 
 static int vph_ctrl_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct pciem_host *v = g_vph;
+    struct pciem_root_complex *v = g_vph;
     unsigned long size = vma->vm_end - vma->vm_start;
     unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
     int bar_index = -1;
@@ -764,7 +764,7 @@ static int vph_ctrl_mmap(struct file *file, struct vm_area_struct *vma)
 
 static long vph_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    struct pciem_host *v = g_vph;
+    struct pciem_root_complex *v = g_vph;
     struct pciem_get_bar_args bar_args;
     int ret = 0;
 
@@ -824,7 +824,7 @@ static const struct file_operations vph_ctrl_fops = {
 
 static int vph_emulator_thread(void *arg)
 {
-    struct pciem_host *v = arg;
+    struct pciem_root_complex *v = arg;
     int i;
 
     if (!v)
@@ -891,7 +891,7 @@ static int vph_emulator_thread(void *arg)
     return 0;
 }
 
-static int pciem_complete_init(struct pciem_host *v)
+static int pciem_complete_init(struct pciem_root_complex *v)
 {
     int rc = 0;
     struct resource *mem_res = NULL;
@@ -1297,7 +1297,7 @@ fail_pdev_null:
     return rc;
 }
 
-static void pciem_teardown_device(struct pciem_host *v)
+static void pciem_teardown_device(struct pciem_root_complex *v)
 {
     int i;
 
