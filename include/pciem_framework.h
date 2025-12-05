@@ -13,7 +13,7 @@
 #include <linux/poll.h>
 #include <linux/wait.h>
 
-struct shim_req
+struct pciem_tlp
 {
     uint32_t id;
     uint32_t type;
@@ -101,7 +101,7 @@ struct pciem_root_complex
     struct pending_req pending[MAX_PENDING_REQS];
     wait_queue_head_t req_wait;
     wait_queue_head_t req_wait_full;
-    struct shim_req req_queue[MAX_PENDING_REQS];
+    struct pciem_tlp req_queue[MAX_PENDING_REQS];
     int req_head, req_tail;
     atomic_t proxy_count;
 

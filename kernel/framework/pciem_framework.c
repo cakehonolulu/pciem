@@ -197,14 +197,14 @@ static bool req_queue_full(struct pciem_root_complex *v)
     return ((v->req_tail + 1) % MAX_PENDING_REQS) == v->req_head;
 }
 
-static void req_queue_put(struct pciem_root_complex *v, struct shim_req *req)
+static void req_queue_put(struct pciem_root_complex *v, struct pciem_tlp *req)
 {
     v->req_queue[v->req_tail] = *req;
     v->req_tail = (v->req_tail + 1) % MAX_PENDING_REQS;
     wake_up_interruptible(&v->req_wait);
 }
 
-static bool req_queue_get(struct pciem_root_complex *v, struct shim_req *req)
+static bool req_queue_get(struct pciem_root_complex *v, struct pciem_tlp *req)
 {
     if (req_queue_empty(v))
     {
@@ -254,7 +254,7 @@ static void complete_req(struct pciem_root_complex *v, uint32_t id, uint64_t dat
 u64 pci_shim_read(u64 addr, u32 size)
 {
     struct pciem_root_complex *v = g_vph;
-    struct shim_req req;
+    struct pciem_tlp req;
     uint32_t id;
     int slot;
     uint64_t result = 0;
@@ -305,7 +305,7 @@ EXPORT_SYMBOL(pci_shim_read);
 int pci_shim_write(u64 addr, u64 data, u32 size)
 {
     struct pciem_root_complex *v = g_vph;
-    struct shim_req req;
+    struct pciem_tlp req;
 
     if (!v || atomic_read(&v->proxy_count) == 0)
     {
@@ -365,7 +365,7 @@ static int shim_release(struct inode *inode, struct file *file)
 static ssize_t shim_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
     struct pciem_root_complex *v = file->private_data;
-    struct shim_req req;
+    struct pciem_tlp req;
     if (wait_event_interruptible(v->req_wait, !req_queue_empty(v)))
     {
         return -ERESTARTSYS;
