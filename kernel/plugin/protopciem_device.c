@@ -4,6 +4,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/pci_ids.h>
 #include <linux/pci_regs.h>
 #include <linux/percpu.h>
 #include <linux/perf_event.h>
@@ -352,17 +353,20 @@ static int proto_register_capabilities(struct pciem_root_complex *v)
     return 0;
 }
 
+#define pci_write(__ty, __ptr, __off, __val) do { *(__ty*)(__ptr + __off) = __val; } while(0)
+#define pci_write8(__ptr, __off, __val) pci_write(u8, __ptr, __off, __val)
+#define pci_write16(__ptr, __off, __val) pci_write(u16, __ptr, __off, __val)
+
 static void proto_fill_config(u8 *cfg)
 {
-    *(u16 *)&cfg[0x00] = PCIEM_PCI_VENDOR_ID;
-    *(u16 *)&cfg[0x02] = PCIEM_PCI_DEVICE_ID;
-    *(u16 *)&cfg[0x04] = PCI_COMMAND_MEMORY;
-    *(u16 *)&cfg[0x06] = PCI_STATUS_CAP_LIST;
-    cfg[0x08] = 0x00;
-    cfg[0x09] = 0x00;
-    cfg[0x0a] = 0x40;
-    cfg[0x0b] = 0x0b;
-    cfg[0x0e] = 0x00;
+    pci_write16(cfg, PCI_VENDOR_ID, PCIEM_PCI_VENDOR_ID);
+    pci_write16(cfg, PCI_DEVICE_ID, PCIEM_PCI_DEVICE_ID);
+    pci_write16(cfg, PCI_COMMAND, PCI_COMMAND_MEMORY);
+    pci_write16(cfg, PCI_STATUS, PCI_STATUS_CAP_LIST);
+    pci_write8(cfg, PCI_REVISION_ID, 0x00);
+    pci_write8(cfg, PCI_CLASS_PROG, 0x00);
+    pci_write16(cfg, PCI_CLASS_DEVICE, PCI_CLASS_PROCESSOR_CO);
+    pci_write8(cfg, PCI_HEADER_TYPE, PCI_HEADER_TYPE_NORMAL);
 }
 
 static int proto_register_bars(struct pciem_root_complex *v)
