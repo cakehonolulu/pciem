@@ -147,6 +147,26 @@ sudo insmod kernel/pciem.ko p2p_regions="0x9ffe00000:0x1000,0x9ffe01000:0x1000"
 - Single device per framework instance
 - Limited to x86_64 architecture?
 
+# Examples
+
+## ProtoPCIem card running software-rendered DOOM using DMA
+
+<p align="center">
+  <img width="1903" height="1029" alt="imagen" src="https://github.com/user-attachments/assets/16f64475-ee51-4f79-ae17-b06363f0b12a" />
+</p>
+
+## ProtoPCIem card running GLQuake (With an OpenGL state machine in QEMU)
+
+<p align="center">
+  <img width="1757" height="893" alt="imagen" src="https://github.com/user-attachments/assets/4ad00e14-83e5-4e1f-b374-fbaa92def4e3" />
+</p>
+
+## ProtoPCIem card running Xash3D/Half-Life (With an OpenGL state machine in QEMU)
+
+<p align="center">
+  <img width="1227" height="846" alt="imagen" src="https://github.com/user-attachments/assets/d21a7d84-f857-4790-bdc6-7bf2714e9eda" />
+</p>
+
 ## License
 
 Dual MIT/GPLv2 (pciem_framework.c and protopciem_driver.c)
