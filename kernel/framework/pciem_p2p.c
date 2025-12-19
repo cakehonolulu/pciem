@@ -115,6 +115,7 @@ int pciem_p2p_init(struct pciem_root_complex *v, const char *regions_str)
     ret = parse_p2p_regions(mgr, regions_str);
     if (ret < 0) {
         pr_err("Failed to parse P2P regions: %d\n", ret);
+        mutex_destroy(&mgr->lock);
         kfree(mgr);
         v->p2p_mgr = NULL;
         return ret;
