@@ -262,6 +262,36 @@ u64 pci_shim_read(u64 addr, u32 size)
 }
 EXPORT_SYMBOL(pci_shim_read);
 
+static void pciem_cleanup_bar(struct pciem_bar_info *bar)
+{
+    if (bar->virt_addr)
+    {
+        if (bar->map_type == PCIEM_MAP_IOREMAP_CACHE || bar->map_type == PCIEM_MAP_IOREMAP ||
+            bar->map_type == PCIEM_MAP_IOREMAP_WC)
+        {
+            iounmap(bar->virt_addr);
+        }
+        bar->virt_addr = NULL;
+    }
+    if (bar->allocated_res && bar->mem_owned_by_framework)
+    {
+        release_resource(bar->allocated_res);
+        kfree(bar->allocated_res->name);
+        kfree(bar->allocated_res);
+        bar->allocated_res = NULL;
+    }
+    if (bar->pages) {
+        __free_pages(bar->pages, bar->order);
+        bar->pages = NULL;
+    }
+}
+
+static void pciem_cleanup_bars(struct pciem_root_complex *v)
+{
+    for (int i = 0; i < PCI_STD_NUM_BARS; i++)
+        pciem_cleanup_bar(&v->bars[i]);
+}
+
 int pci_shim_write(u64 addr, u64 data, u32 size)
 {
     struct pciem_root_complex *v = g_vph;
@@ -1210,18 +1240,6 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     return 0;
 
 fail_map:
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        if (v->bars[i].virt_addr)
-        {
-            if (v->bars[i].map_type == PCIEM_MAP_IOREMAP_CACHE || v->bars[i].map_type == PCIEM_MAP_IOREMAP ||
-                v->bars[i].map_type == PCIEM_MAP_IOREMAP_WC)
-            {
-                iounmap(v->bars[i].virt_addr);
-            }
-            v->bars[i].virt_addr = NULL;
-        }
-    }
     if (use_qemu_forwarding)
     {
         misc_deregister(&v->shim_miscdev);
@@ -1241,19 +1259,7 @@ fail_bus:
 fail_res_list:
     resource_list_free(&resources);
 fail_bars:
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        if (v->bars[i].allocated_res && v->bars[i].mem_owned_by_framework)
-        {
-            release_resource(v->bars[i].allocated_res);
-            kfree(v->bars[i].allocated_res->name);
-            kfree(v->bars[i].allocated_res);
-        }
-        if (v->bars[i].pages)
-        {
-            __free_pages(v->bars[i].pages, v->bars[i].order);
-        }
-    }
+    pciem_cleanup_bars(v);
 fail_pdev:
     platform_device_unregister(v->pdev);
 fail_pdev_null:
@@ -1263,8 +1269,6 @@ fail_pdev_null:
 
 static void pciem_teardown_device(struct pciem_root_complex *v)
 {
-    int i;
-
     pr_info("exit: tearing down pciem device");
 
     if (v->emul_thread)
@@ -1294,39 +1298,7 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
         v->root_bus = NULL;
     }
 
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        struct pciem_bar_info *bar = &v->bars[i];
-
-        if (bar->virt_addr)
-        {
-            if (bar->map_type == PCIEM_MAP_IOREMAP_CACHE || bar->map_type == PCIEM_MAP_IOREMAP ||
-                bar->map_type == PCIEM_MAP_IOREMAP_WC)
-            {
-                iounmap(bar->virt_addr);
-            }
-            bar->virt_addr = NULL;
-        }
-
-        if (bar->allocated_res)
-        {
-            if (bar->mem_owned_by_framework)
-            {
-                release_resource(bar->allocated_res);
-                kfree(bar->allocated_res->name);
-                kfree(bar->allocated_res);
-            }
-            bar->allocated_res = NULL;
-        }
-
-        if (bar->pages)
-        {
-            __free_pages(bar->pages, bar->order);
-            bar->pages = NULL;
-        }
-
-        memset(bar, 0, sizeof(*bar));
-    }
+    pciem_cleanup_bars(v);
 
     if (v->pdev)
     {
