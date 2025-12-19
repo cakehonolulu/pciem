@@ -9,7 +9,7 @@
 static int parse_p2p_regions(struct pciem_p2p_manager *mgr,
                               const char *regions_str)
 {
-    char *str, *token, *cur;
+    char *str __free(kfree) = NULL, *token, *cur;
     phys_addr_t phys;
     resource_size_t size;
     int count = 0;
@@ -82,8 +82,6 @@ static int parse_p2p_regions(struct pciem_p2p_manager *mgr,
         pr_info("Registered P2P region: 0x%llx-0x%llx (size %llu KB)\n",
                 phys, phys + size, size / 1024);
     }
-
-    kfree(str);
 
     if (count > 0) {
         mgr->enabled = true;
