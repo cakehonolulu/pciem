@@ -262,6 +262,22 @@ u64 pci_shim_read(u64 addr, u32 size)
 }
 EXPORT_SYMBOL(pci_shim_read);
 
+static int pciem_reserve_bar_res(struct pciem_bar_info *bar, int i, struct list_head *resources)
+{
+    struct resource_entry *entry;
+
+    if (!bar->allocated_res)
+        return 0;
+
+    entry = resource_list_create_entry(bar->allocated_res, i);
+    if (!entry)
+        return -ENOMEM;
+
+    resource_list_add_tail(entry, resources);
+    pr_info("init: Added BAR%d to resource list", i);
+    return 0;
+}
+
 static int pciem_map_bar_qemu(struct pciem_bar_info *bar, int i)
 {
     pr_info("init: BAR%d QEMU poller mapping as WC (ioremap_wc)", i);
@@ -955,7 +971,6 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     LIST_HEAD(resources);
     int busnr = 1;
     int domain = 0;
-    struct resource_entry *entry;
     int i;
 
     WARN_ON(!g_dev_ops);
@@ -1119,7 +1134,9 @@ static int pciem_complete_init(struct pciem_root_complex *v)
 
     for (i = 0; i < PCI_STD_NUM_BARS; i++)
     {
-        if (v->bars[i].size == 0)
+        struct pciem_bar_info *bar = &v->bars[i];
+
+        if (bar->size == 0)
         {
             continue;
         }
@@ -1129,17 +1146,9 @@ static int pciem_complete_init(struct pciem_root_complex *v)
             continue;
         }
 
-        if (v->bars[i].allocated_res)
-        {
-            entry = resource_list_create_entry(v->bars[i].allocated_res, i);
-            if (!entry)
-            {
-                rc = -ENOMEM;
-                goto fail_res_list;
-            }
-            resource_list_add_tail(entry, &resources);
-            pr_info("init: Added BAR%d to resource list", i);
-        }
+        rc = pciem_reserve_bar_res(bar, i, &resources);
+        if (rc)
+            goto fail_res_list;
     }
 
     while (pci_find_bus(domain, busnr))
