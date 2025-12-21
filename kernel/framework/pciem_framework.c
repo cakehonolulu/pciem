@@ -7,6 +7,7 @@
 #include <asm/io.h>
 #include <asm/tlbflush.h>
 #include <linux/atomic.h>
+#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -261,6 +262,166 @@ u64 pci_shim_read(u64 addr, u32 size)
 }
 EXPORT_SYMBOL(pci_shim_read);
 
+static void pciem_bus_copy_resources(struct pciem_root_complex *v)
+{
+    int i;
+    struct pciem_bar_info *bar;
+    struct pci_dev *dev __free(pci_dev_put) = pci_get_slot(v->root_bus, 0);
+
+    if (!dev)
+        return;
+
+    for (i = 0; i < PCI_STD_NUM_BARS; i++)
+    {
+        bar = &v->bars[i];
+        if (bar->size > 0 && bar->allocated_res)
+        {
+            dev->resource[i] = *bar->allocated_res;
+            dev->resource[i].flags |= IORESOURCE_BUSY;
+            bar->res = &dev->resource[i];
+        }
+    }
+}
+
+static int pciem_reserve_bar_res(struct pciem_bar_info *bar, int i, struct list_head *resources)
+{
+    struct resource_entry *entry;
+
+    if (!bar->allocated_res)
+        return 0;
+
+    entry = resource_list_create_entry(bar->allocated_res, i);
+    if (!entry)
+        return -ENOMEM;
+
+    resource_list_add_tail(entry, resources);
+    pr_info("init: Added BAR%d to resource list", i);
+    return 0;
+}
+
+static int pciem_reserve_bars_res(struct pciem_root_complex *v, struct list_head *resources)
+{
+    int i, rc;
+    struct pciem_bar_info *bar, *prev = NULL;
+
+    for (i = 0; i < PCI_STD_NUM_BARS; i++)
+    {
+        bar = &v->bars[i];
+        if (i > 0)
+            prev = &v->bars[i - 1];
+
+        if (!bar->size)
+            continue;
+
+        if (i & 1 && prev && prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64)
+            continue;
+
+        rc = pciem_reserve_bar_res(bar, i, resources);
+        if (rc)
+            return rc;
+    }
+
+    return 0;
+}
+
+static int pciem_map_bar_qemu(struct pciem_bar_info *bar, int i)
+{
+    pr_info("init: BAR%d QEMU poller mapping as WC (ioremap_wc)", i);
+    bar->virt_addr = ioremap_wc(bar->phys_addr, bar->size);
+    if (!bar->virt_addr)
+    {
+        pr_err("init: BAR%d ioremap_wc() failed!", i);
+        return -ENOMEM;
+    }
+    bar->map_type = PCIEM_MAP_IOREMAP_WC;
+    return 0;
+}
+
+static int pciem_map_bar_regular(struct pciem_bar_info *bar, int i)
+{
+    bar->virt_addr = ioremap_cache(bar->phys_addr, bar->size);
+    if (bar->virt_addr)
+    {
+        bar->map_type = PCIEM_MAP_IOREMAP_CACHE;
+        return 0;
+    }
+
+    pr_warn("init: BAR%d ioremap_cache() failed; trying ioremap()", i);
+    bar->virt_addr = ioremap(bar->phys_addr, bar->size);
+    if (bar->virt_addr)
+    {
+        bar->map_type = PCIEM_MAP_IOREMAP;
+        return 0;
+    }
+
+    return -ENOMEM;
+}
+
+static int pciem_map_bars(struct pciem_root_complex *v, bool use_qemu_forwarding)
+{
+    int rc, i;
+    struct pciem_bar_info *bar, *prev = NULL;
+
+    for (i = 0; i < PCI_STD_NUM_BARS; i++)
+    {
+        bar = &v->bars[i];
+        if (i > 0)
+            prev = &v->bars[i - 1];
+
+        if (!bar->size)
+            continue;
+
+        if (i & 1 && prev && prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64)
+            continue;
+
+        bar->map_type = PCIEM_MAP_NONE;
+
+        if (use_qemu_forwarding)
+            rc = pciem_map_bar_qemu(bar, i);
+        else
+            rc = pciem_map_bar_regular(bar, i);
+
+        if (rc) {
+            pr_err("init: Failed to create any mapping for BAR%d", i);
+            return rc;
+        }
+
+        pr_info("init: BAR%d mapped at %px for emulator (map_type=%d)", i, bar->virt_addr, bar->map_type);
+    }
+
+    return 0;
+}
+
+static void pciem_cleanup_bar(struct pciem_bar_info *bar)
+{
+    if (bar->virt_addr)
+    {
+        if (bar->map_type == PCIEM_MAP_IOREMAP_CACHE || bar->map_type == PCIEM_MAP_IOREMAP ||
+            bar->map_type == PCIEM_MAP_IOREMAP_WC)
+        {
+            iounmap(bar->virt_addr);
+        }
+        bar->virt_addr = NULL;
+    }
+    if (bar->allocated_res && bar->mem_owned_by_framework)
+    {
+        release_resource(bar->allocated_res);
+        kfree(bar->allocated_res->name);
+        kfree(bar->allocated_res);
+        bar->allocated_res = NULL;
+    }
+    if (bar->pages) {
+        __free_pages(bar->pages, bar->order);
+        bar->pages = NULL;
+    }
+}
+
+static void pciem_cleanup_bars(struct pciem_root_complex *v)
+{
+    for (int i = 0; i < PCI_STD_NUM_BARS; i++)
+        pciem_cleanup_bar(&v->bars[i]);
+}
+
 int pci_shim_write(u64 addr, u64 data, u32 size)
 {
     struct pciem_root_complex *v = g_vph;
@@ -329,17 +490,15 @@ static ssize_t shim_read(struct file *file, char __user *buf, size_t count, loff
     {
         return -ERESTARTSYS;
     }
-    mutex_lock(&v->shim_lock);
+    guard(mutex)(&v->shim_lock);
     if (req_queue_get(v, &req))
     {
-        mutex_unlock(&v->shim_lock);
         if (copy_to_user(buf, &req, sizeof(req)))
         {
             return -EFAULT;
         }
         return sizeof(req);
     }
-    mutex_unlock(&v->shim_lock);
     return 0;
 }
 
@@ -355,9 +514,8 @@ static ssize_t shim_write(struct file *file, const char __user *buf, size_t coun
     {
         return -EFAULT;
     }
-    mutex_lock(&v->shim_lock);
+    guard(mutex)(&v->shim_lock);
     complete_req(v, resp.id, resp.data);
-    mutex_unlock(&v->shim_lock);
     return sizeof(resp);
 }
 
@@ -742,53 +900,38 @@ static long vph_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 {
     struct pciem_root_complex *v = g_vph;
     struct pciem_get_bar_args bar_args;
-    int ret = 0;
 
     if (!v)
     {
         return -ENODEV;
     }
 
-    mutex_lock(&v->ctrl_lock);
+    guard(mutex)(&v->ctrl_lock);
 
     switch (cmd)
     {
     case PCIEM_IOCTL_GET_BAR:
         if (copy_from_user(&bar_args, (void __user *)arg, sizeof(bar_args)))
-        {
-            ret = -EFAULT;
-            break;
-        }
+            return -EFAULT;
 
         if (bar_args.bar_index >= PCI_STD_NUM_BARS)
-        {
-            ret = -EINVAL;
-            break;
-        }
+            return -EINVAL;
 
         if (!v->bars[bar_args.bar_index].res)
-        {
-            ret = -ENODEV;
-            break;
-        }
+            return -ENODEV;
 
         bar_args.info.phys_start = (u64)v->bars[bar_args.bar_index].res->start;
         bar_args.info.size = (u64)resource_size(v->bars[bar_args.bar_index].res);
 
         if (copy_to_user((void __user *)arg, &bar_args, sizeof(bar_args)))
-        {
-            ret = -EFAULT;
-        }
-        else
-            ret = 0;
+            return -EFAULT;
         break;
 
     default:
-        ret = -EINVAL;
+        return -EINVAL;
     }
 
-    mutex_unlock(&v->ctrl_lock);
-    return ret;
+    return 0;
 }
 
 static const struct file_operations vph_ctrl_fops = {
@@ -874,7 +1017,6 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     LIST_HEAD(resources);
     int busnr = 1;
     int domain = 0;
-    struct resource_entry *entry;
     int i;
 
     WARN_ON(!g_dev_ops);
@@ -1036,30 +1178,9 @@ static int pciem_complete_init(struct pciem_root_complex *v)
 
     vph_fill_config(v);
 
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        if (v->bars[i].size == 0)
-        {
-            continue;
-        }
-
-        if (i > 0 && (i % 2 == 1) && (v->bars[i - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
-        {
-            continue;
-        }
-
-        if (v->bars[i].allocated_res)
-        {
-            entry = resource_list_create_entry(v->bars[i].allocated_res, i);
-            if (!entry)
-            {
-                rc = -ENOMEM;
-                goto fail_res_list;
-            }
-            resource_list_add_tail(entry, &resources);
-            pr_info("init: Added BAR%d to resource list", i);
-        }
-    }
+    rc = pciem_reserve_bars_res(v, &resources);
+    if (rc)
+        goto fail_res_list;
 
     while (pci_find_bus(domain, busnr))
     {
@@ -1083,22 +1204,7 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     pci_bus_add_devices(v->root_bus);
 
     if (v->root_bus)
-    {
-        struct pci_dev *dev = pci_get_slot(v->root_bus, 0);
-        if (dev)
-        {
-            for (i = 0; i < PCI_STD_NUM_BARS; i++)
-            {
-                if (v->bars[i].size > 0 && v->bars[i].allocated_res)
-                {
-                    dev->resource[i] = *v->bars[i].allocated_res;
-                    dev->resource[i].flags |= IORESOURCE_BUSY;
-                    v->bars[i].res = &dev->resource[i];
-                }
-            }
-            pci_dev_put(dev);
-        }
-    }
+        pciem_bus_copy_resources(v);
 
     pci_bus_assign_resources(v->root_bus);
 
@@ -1146,62 +1252,9 @@ static int pciem_complete_init(struct pciem_root_complex *v)
         }
     }
 
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        struct pciem_bar_info *bar = &v->bars[i];
-
-        if (bar->size == 0)
-        {
-            continue;
-        }
-
-        if (i > 0 && (i % 2 == 1) && (v->bars[i - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
-        {
-            continue;
-        }
-
-        bar->map_type = PCIEM_MAP_NONE;
-
-        if (use_qemu_forwarding)
-        {
-            pr_info("init: BAR%d QEMU poller mapping as WC (ioremap_wc)", i);
-            bar->virt_addr = ioremap_wc(bar->phys_addr, bar->size);
-            if (bar->virt_addr)
-            {
-                bar->map_type = PCIEM_MAP_IOREMAP_WC;
-            }
-            else
-            {
-                pr_err("init: BAR%d ioremap_wc() failed!", i);
-                rc = -ENOMEM;
-                goto fail_map;
-            }
-        }
-        else
-        {
-            bar->virt_addr = ioremap_cache(bar->phys_addr, bar->size);
-            if (bar->virt_addr)
-            {
-                bar->map_type = PCIEM_MAP_IOREMAP_CACHE;
-            }
-            else
-            {
-                pr_warn("init: BAR%d ioremap_cache() failed; trying ioremap()", i);
-                bar->virt_addr = ioremap(bar->phys_addr, bar->size);
-                if (bar->virt_addr)
-                    bar->map_type = PCIEM_MAP_IOREMAP;
-            }
-        }
-
-        if (!bar->virt_addr)
-        {
-            pr_err("init: Failed to create any mapping for BAR%d", i);
-            rc = -ENOMEM;
-            goto fail_map;
-        }
-
-        pr_info("init: BAR%d mapped at %px for emulator (map_type=%d)", i, bar->virt_addr, bar->map_type);
-    }
+    rc = pciem_map_bars(v, use_qemu_forwarding);
+    if (rc)
+        goto fail_map;
 
     v->shared_buf_size = SHARED_BUF_SIZE;
     v->shared_buf_vaddr =
@@ -1227,18 +1280,6 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     return 0;
 
 fail_map:
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        if (v->bars[i].virt_addr)
-        {
-            if (v->bars[i].map_type == PCIEM_MAP_IOREMAP_CACHE || v->bars[i].map_type == PCIEM_MAP_IOREMAP ||
-                v->bars[i].map_type == PCIEM_MAP_IOREMAP_WC)
-            {
-                iounmap(v->bars[i].virt_addr);
-            }
-            v->bars[i].virt_addr = NULL;
-        }
-    }
     if (use_qemu_forwarding)
     {
         misc_deregister(&v->shim_miscdev);
@@ -1258,19 +1299,7 @@ fail_bus:
 fail_res_list:
     resource_list_free(&resources);
 fail_bars:
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        if (v->bars[i].allocated_res && v->bars[i].mem_owned_by_framework)
-        {
-            release_resource(v->bars[i].allocated_res);
-            kfree(v->bars[i].allocated_res->name);
-            kfree(v->bars[i].allocated_res);
-        }
-        if (v->bars[i].pages)
-        {
-            __free_pages(v->bars[i].pages, v->bars[i].order);
-        }
-    }
+    pciem_cleanup_bars(v);
 fail_pdev:
     platform_device_unregister(v->pdev);
 fail_pdev_null:
@@ -1280,8 +1309,6 @@ fail_pdev_null:
 
 static void pciem_teardown_device(struct pciem_root_complex *v)
 {
-    int i;
-
     pr_info("exit: tearing down pciem device");
 
     if (v->emul_thread)
@@ -1311,39 +1338,7 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
         v->root_bus = NULL;
     }
 
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        struct pciem_bar_info *bar = &v->bars[i];
-
-        if (bar->virt_addr)
-        {
-            if (bar->map_type == PCIEM_MAP_IOREMAP_CACHE || bar->map_type == PCIEM_MAP_IOREMAP ||
-                bar->map_type == PCIEM_MAP_IOREMAP_WC)
-            {
-                iounmap(bar->virt_addr);
-            }
-            bar->virt_addr = NULL;
-        }
-
-        if (bar->allocated_res)
-        {
-            if (bar->mem_owned_by_framework)
-            {
-                release_resource(bar->allocated_res);
-                kfree(bar->allocated_res->name);
-                kfree(bar->allocated_res);
-            }
-            bar->allocated_res = NULL;
-        }
-
-        if (bar->pages)
-        {
-            __free_pages(bar->pages, bar->order);
-            bar->pages = NULL;
-        }
-
-        memset(bar, 0, sizeof(*bar));
-    }
+    pciem_cleanup_bars(v);
 
     if (v->pdev)
     {
@@ -1390,13 +1385,12 @@ static void __exit pciem_exit(void)
 {
     pr_info("exit: unloading pciem_hostbridge framework");
 
-    mutex_lock(&pciem_registration_lock);
+    guard(mutex)(&pciem_registration_lock);
 
     if (g_dev_ops)
     {
         pr_err("exit: pciem device plugin still registered! Cannot unload framework.");
         pr_err("exit: Please 'rmmod' the device plugin module first.");
-        mutex_unlock(&pciem_registration_lock);
         return;
     }
 
@@ -1406,7 +1400,6 @@ static void __exit pciem_exit(void)
         g_vph = NULL;
     }
 
-    mutex_unlock(&pciem_registration_lock);
     pr_info("exit: pciem framework done");
 }
 
@@ -1420,20 +1413,18 @@ int pciem_register_ops(struct pciem_epc_ops *ops)
         return -EINVAL;
     }
 
-    mutex_lock(&pciem_registration_lock);
+    guard(mutex)(&pciem_registration_lock);
 
     if (!g_vph)
     {
         pr_err("pciem framework is not loaded or already exiting.\n");
-        rc = -ENODEV;
-        goto out_unlock;
+        return -ENODEV;
     }
 
     if (g_dev_ops)
     {
         pr_err("A pciem device plugin is already registered.\n");
-        rc = -EBUSY;
-        goto out_unlock;
+        return -EBUSY;
     }
 
     g_dev_ops = ops;
@@ -1445,7 +1436,7 @@ int pciem_register_ops(struct pciem_epc_ops *ops)
     {
         pr_err("Failed to complete device initialization: %d\n", rc);
         g_dev_ops = NULL;
-        goto out_unlock;
+        return rc;
     }
 
     if (!try_module_get(THIS_MODULE))
@@ -1453,33 +1444,28 @@ int pciem_register_ops(struct pciem_epc_ops *ops)
         pr_err("Failed to get pciem framework module reference!\n");
         pciem_teardown_device(g_vph);
         g_dev_ops = NULL;
-        rc = -ENODEV;
-    }
-    else
-    {
-        pr_info("pciem device initialization complete.\n");
+        return -ENODEV;
     }
 
-out_unlock:
-    mutex_unlock(&pciem_registration_lock);
-    return rc;
+    pr_info("pciem device initialization complete.\n");
+    return 0;
 }
 EXPORT_SYMBOL(pciem_register_ops);
 
 void pciem_unregister_ops(struct pciem_epc_ops *ops)
 {
-    mutex_lock(&pciem_registration_lock);
+    guard(mutex)(&pciem_registration_lock);
 
     if (!g_vph)
     {
         pr_warn("pciem framework not loaded or already gone.\n");
-        goto out_unlock;
+        return;
     }
 
     if (g_dev_ops != ops)
     {
         pr_err("pciem: trying to unregister unknown device plugin!\n");
-        goto out_unlock;
+        return;
     }
 
     pr_info("Device plugin unregistering, tearing down device...\n");
@@ -1487,9 +1473,6 @@ void pciem_unregister_ops(struct pciem_epc_ops *ops)
     g_dev_ops = NULL;
     module_put(THIS_MODULE);
     pr_info("pciem device teardown complete.\n");
-
-out_unlock:
-    mutex_unlock(&pciem_registration_lock);
 }
 EXPORT_SYMBOL(pciem_unregister_ops);
 
