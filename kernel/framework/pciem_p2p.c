@@ -9,7 +9,7 @@
 static int parse_p2p_regions(struct pciem_p2p_manager *mgr,
                               const char *regions_str)
 {
-    char *str, *token, *cur;
+    char *str __free(kfree) = NULL, *token, *cur;
     phys_addr_t phys;
     resource_size_t size;
     int count = 0;
@@ -83,8 +83,6 @@ static int parse_p2p_regions(struct pciem_p2p_manager *mgr,
                 phys, phys + size, size / 1024);
     }
 
-    kfree(str);
-
     if (count > 0) {
         mgr->enabled = true;
         pr_info("P2P enabled with %d regions\n", count);
@@ -112,16 +110,15 @@ int pciem_p2p_init(struct pciem_root_complex *v, const char *regions_str)
     mgr->max_transfer_size = PCIEM_P2P_MAX_TRANSFER;
     mgr->enabled = false;
 
-    v->p2p_mgr = mgr;
-
     ret = parse_p2p_regions(mgr, regions_str);
     if (ret < 0) {
         pr_err("Failed to parse P2P regions: %d\n", ret);
+        mutex_destroy(&mgr->lock);
         kfree(mgr);
-        v->p2p_mgr = NULL;
         return ret;
     }
 
+    v->p2p_mgr = mgr;
     return 0;
 }
 EXPORT_SYMBOL(pciem_p2p_init);
@@ -196,10 +193,9 @@ int pciem_p2p_register_region(struct pciem_root_complex *v,
         snprintf(region->name, sizeof(region->name), "dynamic_0x%llx", phys);
     }
 
-    mutex_lock(&mgr->lock);
+    guard(mutex)(&mgr->lock);
     list_add_tail(&region->list, &mgr->regions);
     mgr->enabled = true;
-    mutex_unlock(&mgr->lock);
 
     pr_info("Dynamically registered P2P region: %s at 0x%llx (size 0x%llx)\n",
             region->name, phys, size);
@@ -213,7 +209,6 @@ int pciem_p2p_unregister_region(struct pciem_root_complex *v,
 {
     struct pciem_p2p_manager *mgr;
     struct pciem_p2p_region *region, *tmp;
-    int ret = -ENOENT;
 
     if (!v || !v->p2p_mgr) {
         return -EINVAL;
@@ -221,7 +216,7 @@ int pciem_p2p_unregister_region(struct pciem_root_complex *v,
 
     mgr = v->p2p_mgr;
 
-    mutex_lock(&mgr->lock);
+    guard(mutex)(&mgr->lock);
 
     list_for_each_entry_safe(region, tmp, &mgr->regions, list) {
         if (region->phys_start == phys) {
@@ -233,14 +228,11 @@ int pciem_p2p_unregister_region(struct pciem_root_complex *v,
 
             list_del(&region->list);
             kfree(region);
-            ret = 0;
-            break;
+            return 0;
         }
     }
 
-    mutex_unlock(&mgr->lock);
-
-    return ret;
+    return -ENOENT;
 }
 EXPORT_SYMBOL(pciem_p2p_unregister_region);
 
@@ -297,7 +289,7 @@ int pciem_p2p_validate_access(struct pciem_root_complex *v,
         return -EINVAL;
     }
 
-    mutex_lock(&mgr->lock);
+    guard(mutex)(&mgr->lock);
 
     list_for_each_entry(region, &mgr->regions, list) {
         phys_addr_t region_end = region->phys_start + region->size;
@@ -307,8 +299,6 @@ int pciem_p2p_validate_access(struct pciem_root_complex *v,
             break;
         }
     }
-
-    mutex_unlock(&mgr->lock);
 
     if (ret != 0) {
         pr_warn_ratelimited("P2P access denied: 0x%llx+0x%zx not whitelisted\n",
@@ -340,19 +330,15 @@ int pciem_p2p_read(struct pciem_root_complex *v,
 
     mgr = v->p2p_mgr;
 
-    mutex_lock(&mgr->lock);
+    guard(mutex)(&mgr->lock);
 
     region = pciem_p2p_get_region(v, phys_addr);
-    if (!region) {
-        mutex_unlock(&mgr->lock);
+    if (!region)
         return -EFAULT;
-    }
 
     offset = phys_addr - region->phys_start;
 
     memcpy_fromio(dst, region->kaddr + offset, len);
-
-    mutex_unlock(&mgr->lock);
 
     pr_debug("P2P read: 0x%llx+0x%zx from region '%s'\n",
              phys_addr, len, region->name);
@@ -382,19 +368,15 @@ int pciem_p2p_write(struct pciem_root_complex *v,
 
     mgr = v->p2p_mgr;
 
-    mutex_lock(&mgr->lock);
+    guard(mutex)(&mgr->lock);
 
     region = pciem_p2p_get_region(v, phys_addr);
-    if (!region) {
-        mutex_unlock(&mgr->lock);
+    if (!region)
         return -EFAULT;
-    }
 
     offset = phys_addr - region->phys_start;
 
     memcpy_toio(region->kaddr + offset, src, len);
-
-    mutex_unlock(&mgr->lock);
 
     pr_debug("P2P write: 0x%llx+0x%zx to region '%s'\n",
              phys_addr, len, region->name);
