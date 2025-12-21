@@ -14,6 +14,7 @@
 #include "pciem_capabilities.h"
 #include "pciem_ops.h"
 #include "protopciem_device.h"
+#include "pciem_framework.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("cakehonolulu (cakehonolulu@protonmail.com)");
@@ -26,6 +27,8 @@ static int proto_init_state(struct pciem_root_complex *v);
 static void proto_cleanup_state(struct pciem_root_complex *v);
 static void proto_poll_state(struct pciem_root_complex *v, bool proxy_irq_fired);
 static void proto_set_command_watchpoint(struct pciem_root_complex *v, bool enable);
+
+static struct pciem_root_complex *my_device_instance;
 
 struct proto_device_state
 {
@@ -265,34 +268,34 @@ static void proto_poll_state(struct pciem_root_complex *v, bool proxy_irq_fired)
         pr_info("fwd: New command issued: 0x%x\n", mem_val);
 
         s->shadow_control = ioread32(bar0 + REG_CONTROL);
-        if (pci_shim_write(REG_CONTROL, s->shadow_control, 4))
+        if (pci_shim_write(v, REG_CONTROL, s->shadow_control, 4))
             goto cmd_error;
 
         s->shadow_data = ioread32(bar0 + REG_DATA);
-        if (pci_shim_write(REG_DATA, s->shadow_data, 4))
+        if (pci_shim_write(v, REG_DATA, s->shadow_data, 4))
             goto cmd_error;
 
         s->shadow_dma_src_lo = ioread32(bar0 + REG_DMA_SRC_LO);
-        if (pci_shim_write(REG_DMA_SRC_LO, s->shadow_dma_src_lo, 4))
+        if (pci_shim_write(v, REG_DMA_SRC_LO, s->shadow_dma_src_lo, 4))
             goto cmd_error;
 
         s->shadow_dma_src_hi = ioread32(bar0 + REG_DMA_SRC_HI);
-        if (pci_shim_write(REG_DMA_SRC_HI, s->shadow_dma_src_hi, 4))
+        if (pci_shim_write(v, REG_DMA_SRC_HI, s->shadow_dma_src_hi, 4))
             goto cmd_error;
 
         s->shadow_dma_dst_lo = ioread32(bar0 + REG_DMA_DST_LO);
-        if (pci_shim_write(REG_DMA_DST_LO, s->shadow_dma_dst_lo, 4))
+        if (pci_shim_write(v, REG_DMA_DST_LO, s->shadow_dma_dst_lo, 4))
             goto cmd_error;
 
         s->shadow_dst_hi = ioread32(bar0 + REG_DMA_DST_HI);
-        if (pci_shim_write(REG_DMA_DST_HI, s->shadow_dst_hi, 4))
+        if (pci_shim_write(v, REG_DMA_DST_HI, s->shadow_dst_hi, 4))
             goto cmd_error;
 
         s->shadow_dma_len = ioread32(bar0 + REG_DMA_LEN);
-        if (pci_shim_write(REG_DMA_LEN, s->shadow_dma_len, 4))
+        if (pci_shim_write(v, REG_DMA_LEN, s->shadow_dma_len, 4))
             goto cmd_error;
 
-        if (pci_shim_write(REG_CMD, mem_val, 4))
+        if (pci_shim_write(v, REG_CMD, mem_val, 4))
             goto cmd_error;
 
         s->shadow_cmd = mem_val;
@@ -305,9 +308,9 @@ static void proto_poll_state(struct pciem_root_complex *v, bool proxy_irq_fired)
     {
         pr_info("fwd: Command completed via IRQ\n");
 
-        s->shadow_status = (u32)pci_shim_read(REG_STATUS, 4);
-        s->shadow_result_lo = (u32)pci_shim_read(REG_RESULT_LO, 4);
-        s->shadow_result_hi = (u32)pci_shim_read(REG_RESULT_HI, 4);
+        s->shadow_status = (u32)pci_shim_read(v, REG_STATUS, 4);
+        s->shadow_result_lo = (u32)pci_shim_read(v, REG_RESULT_LO, 4);
+        s->shadow_result_hi = (u32)pci_shim_read(v, REG_RESULT_HI, 4);
 
         s->shadow_cmd = 0;
 
@@ -409,22 +412,27 @@ static int proto_register_bars(struct pciem_root_complex *v)
 
 static int __init proto_plugin_init(void)
 {
-    int rc;
+    struct pciem_root_complex *rc;
     pr_info("Registering ProtoPCIem device logic in pciem...\n");
 
     rc = pciem_register_ops(&my_device_ops);
-    if (rc)
+    if (IS_ERR(rc))
     {
-        pr_err("Failed to register with pciem: %d\n", rc);
+        pr_err("Failed to register with pciem: %ld\n", PTR_ERR(rc));
         pr_err("Please ensure the 'pciem' module is loaded first.\n");
+        return PTR_ERR(rc);
     }
-    return rc;
+
+    my_device_instance = rc;
+    return 0;
 }
 
 static void __exit proto_plugin_exit(void)
 {
     pr_info("Unregistering ProtoPCIem device logic from pciem...\n");
-    pciem_unregister_ops(&my_device_ops);
+    if (my_device_instance) {
+        pciem_unregister_ops(my_device_instance);
+    }
     pr_info("ProtoPCIem device logic unregistered.\n");
 }
 

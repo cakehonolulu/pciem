@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/wait.h>
+#include <linux/list.h>
 #include "pciem_p2p.h"
 #include "pciem_ioctl.h"
 
@@ -75,8 +76,17 @@ struct pciem_bar_info
     spinlock_t vma_lock;
 };
 
+struct pciem_epc_ops;
+
 struct pciem_root_complex
 {
+    struct list_head list_node;
+    int instance_id;
+    struct pciem_epc_ops *ops;
+
+    char *ctrl_dev_name;
+    char *shim_dev_name;
+
     unsigned int msi_irq;
     struct irq_work msi_irq_work;
     unsigned int pending_msi_irq;
@@ -122,13 +132,11 @@ struct pciem_root_complex
     struct pciem_p2p_manager *p2p_mgr;
 };
 
-struct pciem_epc_ops;
-
 void pciem_trigger_msi(struct pciem_root_complex *v);
-u64 pci_shim_read(u64 addr, u32 size);
-int pci_shim_write(u64 addr, u64 data, u32 size);
+u64 pci_shim_read(struct pciem_root_complex *v, u64 addr, u32 size);
+int pci_shim_write(struct pciem_root_complex *v, u64 addr, u64 data, u32 size);
 int pciem_register_bar(struct pciem_root_complex *v, int bar_num, resource_size_t size, u32 flags, bool intercept_faults);
-int pciem_register_ops(struct pciem_epc_ops *ops);
-void pciem_unregister_ops(struct pciem_epc_ops *ops);
+struct pciem_root_complex *pciem_register_ops(struct pciem_epc_ops *ops);
+void pciem_unregister_ops(struct pciem_root_complex *v);
 
 #endif /* PCIEM_FRAMEWORK_H */

@@ -26,6 +26,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
+#include <linux/idr.h>
 
 #include "pciem_capabilities.h"
 #include "pciem_dma.h"
@@ -47,8 +48,9 @@ module_param(p2p_regions, charp, 0444);
 MODULE_PARM_DESC(p2p_regions,
     "P2P whitelist: 0xADDR:0xSIZE,0xADDR:0xSIZE");
 
-static struct pciem_root_complex *g_vph;
-static struct pciem_epc_ops *g_dev_ops;
+static LIST_HEAD(pciem_devices);
+static DEFINE_MUTEX(pciem_devices_lock);
+static DEFINE_IDA(pciem_instance_ida);
 static DEFINE_MUTEX(pciem_registration_lock);
 
 static int parse_phys_regions(struct pciem_root_complex *v)
@@ -211,9 +213,8 @@ static void complete_req(struct pciem_root_complex *v, uint32_t id, uint64_t dat
     complete(&v->pending[slot].done);
 }
 
-u64 pci_shim_read(u64 addr, u32 size)
+u64 pci_shim_read(struct pciem_root_complex *v, u64 addr, u32 size)
 {
-    struct pciem_root_complex *v = g_vph;
     struct pciem_tlp req;
     uint32_t id;
     int slot;
@@ -422,9 +423,8 @@ static void pciem_cleanup_bars(struct pciem_root_complex *v)
         pciem_cleanup_bar(&v->bars[i]);
 }
 
-int pci_shim_write(u64 addr, u64 data, u32 size)
+int pci_shim_write(struct pciem_root_complex *v, u64 addr, u64 data, u32 size)
 {
-    struct pciem_root_complex *v = g_vph;
     struct pciem_tlp req;
 
     if (!v || atomic_read(&v->proxy_count) == 0)
@@ -656,8 +656,9 @@ static const struct file_operations shim_fops = {
 
 static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
-    struct pciem_root_complex *v = g_vph;
+    struct pciem_root_complex *v = bus->sysdata;
     u32 val = ~0U;
+
     if (!v || devfn != 0)
     {
         *value = ~0U;
@@ -745,7 +746,8 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, i
 
 static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
 {
-    struct pciem_root_complex *v = g_vph;
+    struct pciem_root_complex *v = bus->sysdata;
+
     if (!v)
     {
         return PCIBIOS_DEVICE_NOT_FOUND;
@@ -815,9 +817,10 @@ static struct pci_ops vph_pci_ops = {
 static void vph_fill_config(struct pciem_root_complex *v)
 {
     memset(v->cfg, 0, sizeof(v->cfg));
-    if (g_dev_ops && g_dev_ops->fill_config_space)
+
+    if (v->ops && v->ops->fill_config_space)
     {
-        g_dev_ops->fill_config_space(v->cfg);
+        v->ops->fill_config_space(v->cfg);
     }
     else
     {
@@ -828,9 +831,9 @@ static void vph_fill_config(struct pciem_root_complex *v)
 
     pciem_init_cap_manager(v);
 
-    if (g_dev_ops && g_dev_ops->register_capabilities)
+    if (v->ops && v->ops->register_capabilities)
     {
-        if (g_dev_ops->register_capabilities(v) < 0)
+        if (v->ops->register_capabilities(v) < 0)
         {
             pr_err("pciem: register_capabilities failed\n");
         }
@@ -839,9 +842,17 @@ static void vph_fill_config(struct pciem_root_complex *v)
     pciem_build_config_space(v);
 }
 
+static int vph_ctrl_open(struct inode *inode, struct file *file)
+{
+    struct miscdevice *misc = file->private_data;
+    struct pciem_root_complex *v = container_of(misc, struct pciem_root_complex, vph_miscdev);
+    file->private_data = v;
+    return 0;
+}
+
 static int vph_ctrl_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct pciem_root_complex *v = g_vph;
+    struct pciem_root_complex *v = file->private_data;
     unsigned long size = vma->vm_end - vma->vm_start;
     unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
     int bar_index = -1;
@@ -898,7 +909,7 @@ static int vph_ctrl_mmap(struct file *file, struct vm_area_struct *vma)
 
 static long vph_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    struct pciem_root_complex *v = g_vph;
+    struct pciem_root_complex *v = file->private_data;
     struct pciem_get_bar_args bar_args;
 
     if (!v)
@@ -936,6 +947,7 @@ static long vph_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 
 static const struct file_operations vph_ctrl_fops = {
     .owner = THIS_MODULE,
+    .open = vph_ctrl_open,
     .unlocked_ioctl = vph_ctrl_ioctl,
     .mmap = vph_ctrl_mmap,
     .compat_ioctl = vph_ctrl_ioctl,
@@ -965,14 +977,14 @@ static int vph_emulator_thread(void *arg)
         pr_warn("Emulator thread: No fault-intercepted BARs with mappings found");
     }
 
-    if (!g_dev_ops || !g_dev_ops->init_emulation_state || !g_dev_ops->poll_device_state ||
-        !g_dev_ops->cleanup_emulation_state)
+    if (!v->ops || !v->ops->init_emulation_state || !v->ops->poll_device_state ||
+        !v->ops->cleanup_emulation_state)
     {
         pr_err("Emulator thread started but device ops are not fully registered!\n");
         return -EINVAL;
     }
 
-    if (g_dev_ops->init_emulation_state(v))
+    if (v->ops->init_emulation_state(v))
     {
         pr_err("Failed to init device emulation state\n");
         return -ENOMEM;
@@ -980,8 +992,8 @@ static int vph_emulator_thread(void *arg)
 
     pr_info("Emulation thread started");
 
-    if (g_dev_ops->set_command_watchpoint)
-        g_dev_ops->set_command_watchpoint(v, true);
+    if (v->ops->set_command_watchpoint)
+        v->ops->set_command_watchpoint(v, true);
 
     while (!kthread_should_stop())
     {
@@ -998,14 +1010,14 @@ static int vph_emulator_thread(void *arg)
 
         if (guest_mmio || proxy_irq)
         {
-            g_dev_ops->poll_device_state(v, proxy_irq);
+            v->ops->poll_device_state(v, proxy_irq);
         }
     }
 
-    if (g_dev_ops->set_command_watchpoint)
-        g_dev_ops->set_command_watchpoint(v, false);
+    if (v->ops->set_command_watchpoint)
+        v->ops->set_command_watchpoint(v, false);
 
-    g_dev_ops->cleanup_emulation_state(v);
+    v->ops->cleanup_emulation_state(v);
     pr_info("Emulation thread stopped");
     return 0;
 }
@@ -1019,9 +1031,12 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     int domain = 0;
     int i;
 
-    WARN_ON(!g_dev_ops);
+    WARN_ON(!v->ops);
 
-    v->pdev = platform_device_register_simple(DRIVER_NAME, -1, NULL, 0);
+    char pdev_name[32];
+    snprintf(pdev_name, sizeof(pdev_name), "%s.%d", DRIVER_NAME, v->instance_id);
+
+    v->pdev = platform_device_register_simple(pdev_name, -1, NULL, 0);
     if (IS_ERR(v->pdev))
     {
         rc = PTR_ERR(v->pdev);
@@ -1040,13 +1055,13 @@ static int pciem_complete_init(struct pciem_root_complex *v)
         pr_warn("pciem: P2P init failed: %d (non-fatal)\n", rc);
     }
 
-    if (!g_dev_ops->register_bars)
+    if (!v->ops->register_bars)
     {
         pr_err("pciem: plugin has no register_bars op\n");
         rc = -EINVAL;
         goto fail_pdev;
     }
-    rc = g_dev_ops->register_bars(v);
+    rc = v->ops->register_bars(v);
     if (rc)
     {
         pr_err("pciem: plugin register_bars failed: %d\n", rc);
@@ -1228,7 +1243,7 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     }
 
     v->vph_miscdev.minor = MISC_DYNAMIC_MINOR;
-    v->vph_miscdev.name = CTRL_DEVICE_NAME;
+    v->vph_miscdev.name = v->ctrl_dev_name;
     v->vph_miscdev.fops = &vph_ctrl_fops;
     rc = misc_register(&v->vph_miscdev);
     if (rc)
@@ -1241,7 +1256,7 @@ static int pciem_complete_init(struct pciem_root_complex *v)
     {
         pr_info("init: Registering shim misc device for forwarding\n");
         v->shim_miscdev.minor = MISC_DYNAMIC_MINOR;
-        v->shim_miscdev.name = SHIM_DEVICE_NAME;
+        v->shim_miscdev.name = v->shim_dev_name;
         v->shim_miscdev.fops = &shim_fops;
         v->shim_miscdev.groups = NULL;
         rc = misc_register(&v->shim_miscdev);
@@ -1268,7 +1283,7 @@ static int pciem_complete_init(struct pciem_root_complex *v)
 
     memset(v->shared_buf_vaddr, 0, v->shared_buf_size);
 
-    v->emul_thread = kthread_run(vph_emulator_thread, v, "vph_emulator");
+    v->emul_thread = kthread_run(vph_emulator_thread, v, "vph_emu/%d", v->instance_id);
     if (IS_ERR(v->emul_thread))
     {
         rc = PTR_ERR(v->emul_thread);
@@ -1276,7 +1291,7 @@ static int pciem_complete_init(struct pciem_root_complex *v)
         goto fail_map;
     }
 
-    pr_info("init: pciem_hostbridge ready. ctrl device: /dev/%s", CTRL_DEVICE_NAME);
+    pr_info("init: pciem instance %d ready. ctrl: %s", v->instance_id, v->ctrl_dev_name);
     return 0;
 
 fail_map:
@@ -1309,7 +1324,7 @@ fail_pdev_null:
 
 static void pciem_teardown_device(struct pciem_root_complex *v)
 {
-    pr_info("exit: tearing down pciem device");
+    pr_info("exit: tearing down pciem instance %d", v->instance_id);
 
     if (v->emul_thread)
     {
@@ -1355,122 +1370,148 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
 static int __init pciem_init(void)
 {
     pr_info("init: pciem_hostbridge framework loading (forwarding: %s)", use_qemu_forwarding ? "YES" : "NO");
-    g_vph = kzalloc(sizeof(*g_vph), GFP_KERNEL);
 
-    if (!g_vph)
-    {
-        return -ENOMEM;
-    }
+    ida_init(&pciem_instance_ida);
+    INIT_LIST_HEAD(&pciem_devices);
 
-    init_irq_work(&g_vph->msi_irq_work, pciem_msi_irq_work_func);
-    g_vph->pending_msi_irq = 0;
-    mutex_init(&g_vph->ctrl_lock);
-    mutex_init(&g_vph->shim_lock);
-    g_vph->next_id = 0;
-    memset(g_vph->pending, 0, sizeof(g_vph->pending));
-    init_waitqueue_head(&g_vph->req_wait);
-    init_waitqueue_head(&g_vph->req_wait_full);
-    g_vph->req_head = g_vph->req_tail = 0;
-    atomic_set(&g_vph->proxy_count, 0);
-    atomic_set(&g_vph->proxy_irq_pending, 0);
-    init_waitqueue_head(&g_vph->write_wait);
-    g_vph->device_private_data = NULL;
-    memset(g_vph->bars, 0, sizeof(g_vph->bars));
-
-    pr_info("init: pciem framework loaded. Waiting for device plugin to register.");
+    pr_info("init: pciem framework loaded. Waiting for device plugins.");
     return 0;
 }
 
 static void __exit pciem_exit(void)
 {
+    struct pciem_root_complex *v, *tmp;
+
     pr_info("exit: unloading pciem_hostbridge framework");
 
     guard(mutex)(&pciem_registration_lock);
 
-    if (g_dev_ops)
+    mutex_lock(&pciem_devices_lock);
+    list_for_each_entry_safe(v, tmp, &pciem_devices, list_node)
     {
-        pr_err("exit: pciem device plugin still registered! Cannot unload framework.");
-        pr_err("exit: Please 'rmmod' the device plugin module first.");
-        return;
+        pr_warn("exit: forcibly cleaning up instance %d (owner should have unregistered!)\n", v->instance_id);
+        list_del(&v->list_node);
+        pciem_teardown_device(v);
+        ida_free(&pciem_instance_ida, v->instance_id);
+        kfree(v->ctrl_dev_name);
+        kfree(v->shim_dev_name);
+        kfree(v);
     }
+    mutex_unlock(&pciem_devices_lock);
 
-    if (g_vph)
-    {
-        kfree(g_vph);
-        g_vph = NULL;
-    }
+    ida_destroy(&pciem_instance_ida);
 
     pr_info("exit: pciem framework done");
 }
 
-int pciem_register_ops(struct pciem_epc_ops *ops)
+struct pciem_root_complex *pciem_register_ops(struct pciem_epc_ops *ops)
 {
+    struct pciem_root_complex *v;
     int rc = 0;
+    int id;
 
     if (!ops)
     {
         pr_err("Invalid (NULL) pciem_device_ops provided!\n");
-        return -EINVAL;
+        return ERR_PTR(-EINVAL);
     }
 
     guard(mutex)(&pciem_registration_lock);
 
-    if (!g_vph)
-    {
-        pr_err("pciem framework is not loaded or already exiting.\n");
-        return -ENODEV;
+    id = ida_alloc(&pciem_instance_ida, GFP_KERNEL);
+    if (id < 0) return ERR_PTR(id);
+
+    v = kzalloc(sizeof(*v), GFP_KERNEL);
+    if (!v) {
+        ida_free(&pciem_instance_ida, id);
+        return ERR_PTR(-ENOMEM);
     }
 
-    if (g_dev_ops)
-    {
-        pr_err("A pciem device plugin is already registered.\n");
-        return -EBUSY;
+    v->instance_id = id;
+    v->ops = ops;
+
+    init_irq_work(&v->msi_irq_work, pciem_msi_irq_work_func);
+    v->pending_msi_irq = 0;
+    mutex_init(&v->ctrl_lock);
+    mutex_init(&v->shim_lock);
+    v->next_id = 0;
+    memset(v->pending, 0, sizeof(v->pending));
+    init_waitqueue_head(&v->req_wait);
+    init_waitqueue_head(&v->req_wait_full);
+    v->req_head = v->req_tail = 0;
+    atomic_set(&v->proxy_count, 0);
+    atomic_set(&v->proxy_irq_pending, 0);
+    init_waitqueue_head(&v->write_wait);
+    v->device_private_data = NULL;
+    memset(v->bars, 0, sizeof(v->bars));
+
+    v->ctrl_dev_name = kasprintf(GFP_KERNEL, "pciem_ctrl%d", id);
+    v->shim_dev_name = kasprintf(GFP_KERNEL, "pciem_shim%d", id);
+
+    if (!v->ctrl_dev_name || !v->shim_dev_name) {
+        kfree(v->ctrl_dev_name);
+        kfree(v->shim_dev_name);
+        kfree(v);
+        ida_free(&pciem_instance_ida, id);
+        return ERR_PTR(-ENOMEM);
     }
 
-    g_dev_ops = ops;
-    pr_info("Device plugin registered, completing device initialization...\n");
+    pr_info("Registering instance %d...\n", id);
 
-    rc = pciem_complete_init(g_vph);
+    rc = pciem_complete_init(v);
 
     if (rc)
     {
         pr_err("Failed to complete device initialization: %d\n", rc);
-        g_dev_ops = NULL;
-        return rc;
+        ida_free(&pciem_instance_ida, id);
+        kfree(v->ctrl_dev_name);
+        kfree(v->shim_dev_name);
+        kfree(v);
+        return ERR_PTR(rc);
     }
 
     if (!try_module_get(THIS_MODULE))
     {
         pr_err("Failed to get pciem framework module reference!\n");
-        pciem_teardown_device(g_vph);
-        g_dev_ops = NULL;
-        return -ENODEV;
+        pciem_teardown_device(v);
+        ida_free(&pciem_instance_ida, id);
+        kfree(v->ctrl_dev_name);
+        kfree(v->shim_dev_name);
+        kfree(v);
+        return ERR_PTR(-ENODEV);
     }
 
-    pr_info("pciem device initialization complete.\n");
-    return 0;
+    mutex_lock(&pciem_devices_lock);
+    list_add_tail(&v->list_node, &pciem_devices);
+    mutex_unlock(&pciem_devices_lock);
+
+    pr_info("pciem device initialization complete for instance %d.\n", id);
+    return v;
 }
 EXPORT_SYMBOL(pciem_register_ops);
 
-void pciem_unregister_ops(struct pciem_epc_ops *ops)
+void pciem_unregister_ops(struct pciem_root_complex *v)
 {
+    if (!v) {
+        pr_warn("pciem: null passed to unregister\n");
+        return;
+    }
+
     guard(mutex)(&pciem_registration_lock);
 
-    if (!g_vph)
-    {
-        pr_warn("pciem framework not loaded or already gone.\n");
-        return;
-    }
+    pr_info("Device instance %d unregistering...\n", v->instance_id);
 
-    if (g_dev_ops != ops)
-    {
-        pr_err("pciem: trying to unregister unknown device plugin!\n");
-        return;
-    }
+    mutex_lock(&pciem_devices_lock);
+    list_del(&v->list_node);
+    mutex_unlock(&pciem_devices_lock);
 
-    pr_info("Device plugin unregistering, tearing down device...\n");
-    pciem_teardown_device(g_vph);
-    g_dev_ops = NULL;
+    pciem_teardown_device(v);
+
+    ida_free(&pciem_instance_ida, v->instance_id);
+    kfree(v->ctrl_dev_name);
+    kfree(v->shim_dev_name);
+    kfree(v);
+
     module_put(THIS_MODULE);
     pr_info("pciem device teardown complete.\n");
 }
