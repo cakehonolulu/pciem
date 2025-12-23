@@ -53,6 +53,21 @@ static DEFINE_MUTEX(pciem_devices_lock);
 static DEFINE_IDA(pciem_instance_ida);
 static DEFINE_MUTEX(pciem_registration_lock);
 
+static void pciem_fixup_bridge_domain(struct pci_host_bridge *bridge, 
+                                      struct pciem_host_bridge_priv *priv, 
+                                      int domain)
+{
+    bridge->domain_nr = domain;
+
+#ifdef CONFIG_X86
+    priv->sd.domain = domain;
+    priv->sd.node = NUMA_NO_NODE;
+    bridge->sysdata = &priv->sd;
+#else
+    bridge->sysdata = priv;
+#endif
+}
+
 static int parse_phys_regions(struct pciem_root_complex *v)
 {
     char *str, *token, *cur;
@@ -656,8 +671,17 @@ static const struct file_operations shim_fops = {
 
 static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
-    struct pciem_root_complex *v = bus->sysdata;
+    struct pciem_root_complex *v;
     u32 val = ~0U;
+
+#ifdef CONFIG_X86
+    struct pci_sysdata *sd = bus->sysdata;
+    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
+    v = priv->v;
+#else
+    struct pciem_host_bridge_priv *priv = bus->sysdata;
+    v = priv->v;
+#endif
 
     if (!v || devfn != 0)
     {
@@ -746,7 +770,16 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, i
 
 static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
 {
-    struct pciem_root_complex *v = bus->sysdata;
+    struct pciem_root_complex *v;
+
+#ifdef CONFIG_X86
+    struct pci_sysdata *sd = bus->sysdata;
+    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
+    v = priv->v;
+#else
+    struct pciem_host_bridge_priv *priv = bus->sysdata;
+    v = priv->v;
+#endif
 
     if (!v)
     {
@@ -1220,7 +1253,37 @@ static int pciem_complete_init(struct pciem_root_complex *v)
         }
     }
 
-    v->root_bus = pci_scan_root_bus(&v->pdev->dev, busnr, &vph_pci_ops, v, &resources);
+    struct pci_host_bridge *bridge;
+    struct pciem_host_bridge_priv *priv;
+
+    bridge = pci_alloc_host_bridge(sizeof(*priv));
+    if (!bridge) {
+        rc = -ENOMEM;
+        goto fail_res_list;
+    }
+
+    priv = pci_host_bridge_priv(bridge);
+    priv->v = v;
+
+    pciem_fixup_bridge_domain(bridge, priv, domain);
+
+    bridge->dev.parent = &v->pdev->dev;
+    bridge->busnr = busnr;
+    bridge->ops = &vph_pci_ops;
+    list_splice_init(&resources, &bridge->windows);
+
+    rc = pci_host_probe(bridge);
+
+    if (rc < 0)
+    {
+        pr_err("init: pci_host_probe failed: %d\n", rc);
+        pci_free_host_bridge(bridge);
+        rc = -ENODEV;
+        goto fail_res_list;
+    }
+
+    v->root_bus = bridge->bus;
+
     if (!v->root_bus)
     {
         pr_err("init: pci_scan_bus failed");

@@ -13,6 +13,19 @@
 #include <linux/poll.h>
 #include <linux/wait.h>
 #include <linux/list.h>
+
+#ifdef CONFIG_X86
+#include <asm/pci.h>
+#endif
+
+struct pciem_host_bridge_priv {
+    struct pciem_root_complex *v;
+
+#ifdef CONFIG_X86
+    struct pci_sysdata sd;
+#endif
+};
+
 #include "pciem_p2p.h"
 #include "pciem_ioctl.h"
 
