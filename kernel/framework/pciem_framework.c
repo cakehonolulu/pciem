@@ -784,7 +784,19 @@ static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, 
         }
         else if (idx > 0 && (idx % 2 == 1) && (v->bars[idx - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
         {
-            v->bars[idx].base_addr_val = value;
+            resource_size_t bsize_prev = v->bars[idx - 1].size;
+            u32 mask_high = 0xffffffff;
+            
+            if (bsize_prev < (1ULL << 32))
+            {
+                mask_high = 0;
+            }
+            else
+            {
+                mask_high = (u32)(~(bsize_prev - 1) >> 32);
+            }
+            
+            v->bars[idx].base_addr_val = value & mask_high;
             return PCIBIOS_SUCCESSFUL;
         }
     }
