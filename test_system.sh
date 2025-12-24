@@ -37,7 +37,7 @@ sleep 1
 if [[ "$1" == "forwarding" ]]; then
     log_info "Loading pciem in QEMU Forwarding mode"
     /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 kernel/pciem.ko
-    sudo insmod kernel/pciem.ko use_qemu_forwarding=1 pciem_phys_regions="bar0:0x700000000:0x10000,bar2:0x700100000:0x100000"
+    sudo insmod kernel/pciem.ko pciem_mode=1 pciem_phys_regions="bar0:0x700000000:0x10000,bar2:0x700100000:0x100000"
 else
     log_info "Loading pciem in default (internal emulation) mode"
     /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 kernel/pciem.ko
@@ -66,18 +66,18 @@ fi
 
 log_info "Checking device files..."
 if [[ "$1" == "forwarding" ]]; then
-    if [ ! -c /dev/pciem_shim ]; then
-        log_error "/dev/pciem_shim not found (needed for forwarding)"
+    if [ ! -c /dev/pciem_shim0 ]; then
+        log_error "/dev/pciem_shim0 not found (needed for forwarding)"
         exit 1
     fi
-    log_info "/dev/pciem_shim exists"
+    log_info "/dev/pciem_shim0 exists"
 fi
 
-if [ ! -c /dev/pciem_ctrl ]; then
-log_error "/dev/pciem_ctrl not found"
+if [ ! -c /dev/pciem_ctrl0 ]; then
+log_error "/dev/pciem_ctrl0 not found"
 exit 1
 fi
-log_info "/dev/pciem_ctrl exists"
+log_info "/dev/pciem_ctrl0 exists"
 
 if [[ "$1" == "forwarding" ]]; then
     log_warn "Forwarding mode enabled. Please start QEMU now."

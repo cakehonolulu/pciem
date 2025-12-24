@@ -1,8 +1,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/pci_regs.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,13 +63,15 @@ struct device_state
     pthread_cond_t ack_cond;
     volatile int waiting_for_ack;
     struct qemu_resp last_resp;
+
+    struct pciem_shared_ring *event_ring;
 };
 
 static struct device_state dev_state;
 
 static void signal_handler(int signum)
 {
-    printf("\n[*] Signal %d received, trying to exit...\n", signum);
+    printf("\n[\x1b[31m*\x1b[0m] %d received, trying to exit...\n", signum);
     dev_state.running = 0;
 }
 
@@ -103,8 +107,8 @@ static int create_qemu_socket(void)
         return -1;
     }
 
-    printf("[*] Socket at: %s\n", QEMU_SOCKET_PATH);
-    printf("[*] Waiting for QEMU to connect...\n");
+    printf("[\x1b[32m*\x1b[0m] Socket at: %s\n", QEMU_SOCKET_PATH);
+    printf("[\x1b[33m*\x1b[0m] Waiting for QEMU to connect...\n");
 
     return sock;
 }
@@ -122,8 +126,24 @@ static int wait_for_qemu_connection(int listen_sock)
         return -1;
     }
 
-    printf("[*] QEMU connected!\n");
+    printf("[\x1b[32m*\x1b[0m] QEMU connected!\n");
     return client_sock;
+}
+
+static int writen(int fd, const void *buf, size_t n)
+{
+    size_t written = 0;
+    while (written < n)
+    {
+        ssize_t r = write(fd, (const char *)buf + written, n - written);
+        if (r <= 0)
+        {
+            if (r < 0 && errno == EINTR) continue;
+            return -1;
+        }
+        written += r;
+    }
+    return 0;
 }
 
 static int map_bars_via_fd(void)
@@ -148,13 +168,15 @@ static int map_bars_via_fd(void)
         return -1;
     }
 
-    printf("[*] BARs mapped successfully via Instance FD\n");
+    printf("[\x1b[32m*\x1b[0m] BARs mapped successfully via Instance FD\n");
     return 0;
 }
 
-static void send_register_write_sync(uint32_t offset, uint32_t value)
+static int send_register_write_sync(uint32_t offset, uint32_t value)
 {
     struct qemu_msg msg;
+    struct timespec timeout;
+    int ret;
 
     msg.type = MSG_REGISTER_WRITE;
     msg.offset = offset;
@@ -166,28 +188,40 @@ static void send_register_write_sync(uint32_t offset, uint32_t value)
     {
         perror("Socket write failed");
         pthread_mutex_unlock(&dev_state.sock_lock);
-        return;
+        return -1;
     }
 
+    clock_gettime(CLOCK_REALTIME, &timeout);
+    timeout.tv_sec += 10;
+    
     dev_state.waiting_for_ack = 1;
     while (dev_state.waiting_for_ack)
     {
-        pthread_cond_wait(&dev_state.ack_cond, &dev_state.sock_lock);
+        ret = pthread_cond_timedwait(&dev_state.ack_cond, &dev_state.sock_lock, &timeout);
+        if (ret == ETIMEDOUT) {
+            printf("[!] QEMU timeout on reg 0x%x, disconnecting\n", offset);
+            dev_state.waiting_for_ack = 0;
+            dev_state.qemu_connected = 0;
+            pthread_mutex_unlock(&dev_state.sock_lock);
+            return -1;
+        }
     }
-
+    
     pthread_mutex_unlock(&dev_state.sock_lock);
+    return 0;
 }
 
-static void forward_command_to_qemu(void)
+static int forward_command_to_qemu(void)
 {
-    send_register_write_sync(REG_CONTROL, dev_state.bar0[REG_CONTROL / 4]);
-    send_register_write_sync(REG_DATA, dev_state.bar0[REG_DATA / 4]);
-    send_register_write_sync(REG_DMA_SRC_LO, dev_state.bar0[REG_DMA_SRC_LO / 4]);
-    send_register_write_sync(REG_DMA_SRC_HI, dev_state.bar0[REG_DMA_SRC_HI / 4]);
-    send_register_write_sync(REG_DMA_DST_LO, dev_state.bar0[REG_DMA_DST_LO / 4]);
-    send_register_write_sync(REG_DMA_DST_HI, dev_state.bar0[REG_DMA_DST_HI / 4]);
-    send_register_write_sync(REG_DMA_LEN, dev_state.bar0[REG_DMA_LEN / 4]);
-    send_register_write_sync(REG_CMD, dev_state.bar0[REG_CMD / 4]);
+    if (send_register_write_sync(REG_CONTROL, dev_state.bar0[REG_CONTROL / 4]) < 0) return -1;
+    if (send_register_write_sync(REG_DATA, dev_state.bar0[REG_DATA / 4]) < 0) return -1;
+    if (send_register_write_sync(REG_DMA_SRC_LO, dev_state.bar0[REG_DMA_SRC_LO / 4]) < 0) return -1;
+    if (send_register_write_sync(REG_DMA_SRC_HI, dev_state.bar0[REG_DMA_SRC_HI / 4]) < 0) return -1;
+    if (send_register_write_sync(REG_DMA_DST_LO, dev_state.bar0[REG_DMA_DST_LO / 4]) < 0) return -1;
+    if (send_register_write_sync(REG_DMA_DST_HI, dev_state.bar0[REG_DMA_DST_HI / 4]) < 0) return -1;
+    if (send_register_write_sync(REG_DMA_LEN, dev_state.bar0[REG_DMA_LEN / 4]) < 0) return -1;
+    if (send_register_write_sync(REG_CMD, dev_state.bar0[REG_CMD / 4]) < 0) return -1;
+    return 0;
 }
 
 static void *qemu_handler_thread(void *arg)
@@ -202,7 +236,7 @@ static void *qemu_handler_thread(void *arg)
         if (n != sizeof(header))
         {
             if (n == 0)
-                printf("[!] QEMU connection closed!\n");
+                printf("[\x1b[31m!\x1b[0m] QEMU connection closed!\n");
             else
                 perror("Socket read failed");
             dev_state.qemu_connected = 0;
@@ -226,7 +260,7 @@ static void *qemu_handler_thread(void *arg)
 
                 if (ioctl(dev_state.pciem_fd, PCIEM_IOCTL_DMA, &dma_op) < 0)
                 {
-                    perror("  ✗ DMA read failed");
+                    perror("[X] DMA read failed");
                     resp.status = -1;
                 }
                 else
@@ -238,7 +272,11 @@ static void *qemu_handler_thread(void *arg)
                 write(dev_state.qemu_sock, &resp, sizeof(resp));
                 if (resp.status == 0)
                 {
-                    write(dev_state.qemu_sock, dev_state.dma_bounce_buf, msg.len);
+                    if (writen(dev_state.qemu_sock, dev_state.dma_bounce_buf, msg.len) < 0) {
+                        perror("Failed to write DMA data to QEMU");
+                        pthread_mutex_unlock(&dev_state.sock_lock);
+                        break;
+                    }
                 }
                 pthread_mutex_unlock(&dev_state.sock_lock);
             }
@@ -274,7 +312,7 @@ static void *qemu_handler_thread(void *arg)
         }
     }
 
-    printf("[!] QEMU forwarding stopped\n");
+    printf("[\x1b[31m!\x1b[0m] QEMU forwarding stopped\n");
     return NULL;
 }
 
@@ -357,7 +395,7 @@ int main(void)
     struct pciem_bar_config bar0 = {.bar_index = 0,
                                     .size = PCIEM_BAR0_SIZE,
                                     .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64,
-                                    .intercept = PCIEM_BAR_INTERCEPT_NONE};
+                                    .intercept = PCIEM_BAR_INTERCEPT_WRITE};
     ioctl(dev_state.pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar0);
 
     struct pciem_bar_config bar2 = {.bar_index = 2,
@@ -382,10 +420,37 @@ int main(void)
         goto cleanup;
     }
     dev_state.instance_fd = ret_fd;
-    printf("[*] Device registered, got instance FD: %d\n", dev_state.instance_fd);
+    printf("[\x1b[32m*\x1b[0m] Device registered, got instance FD: %d\n",
+       dev_state.instance_fd);
 
-    if (map_bars_via_fd() < 0)
+    dev_state.bar0_size = PCIEM_BAR0_SIZE;
+    dev_state.bar0 = mmap(NULL, dev_state.bar0_size, PROT_READ | PROT_WRITE,
+                          MAP_SHARED, dev_state.instance_fd, 0 * 4096);
+
+    if (dev_state.bar0 == MAP_FAILED)
+    {
+        perror("mmap BAR0 failed");
+        return -1;
+    }
+
+    dev_state.bar2_size = PCIEM_BAR2_SIZE;
+    dev_state.bar2 = mmap(NULL, dev_state.bar2_size, PROT_READ | PROT_WRITE,
+                          MAP_SHARED, dev_state.instance_fd, 2 * 4096);
+
+    if (dev_state.bar2 == MAP_FAILED)
+    {
+        perror("mmap BAR2 failed");
+        return -1;
+    }
+
+    printf("[\x1b[32m*\x1b[0m] BARs mapped successfully via Instance FD\n");
+
+    dev_state.event_ring = mmap(NULL, sizeof(struct pciem_shared_ring), PROT_READ | PROT_WRITE,
+                                 MAP_SHARED, dev_state.pciem_fd, 0);
+    if (dev_state.event_ring == MAP_FAILED) {
+        perror("mmap shared event ring failed");
         goto cleanup;
+    }
 
     listen_sock = create_qemu_socket();
     if (listen_sock < 0)
@@ -404,7 +469,7 @@ int main(void)
             dev_state.qemu_connected = 1;
             dev_state.dma_bounce_buf = malloc(4 * 1024 * 1024);
             pthread_create(&dev_state.qemu_thread, NULL, qemu_handler_thread, NULL);
-            printf("[*] QEMU forwarding mode\n");
+            printf("[\x1b[32m*\x1b[0m] QEMU forwarding mode\n");
         }
     }
     else
@@ -412,27 +477,43 @@ int main(void)
         printf("[X] QEMU socket not found, running internal emulation...\n");
     }
 
-    while (dev_state.running)
     {
-        int ret = setup_watchpoints();
-        if (ret == 0)
-            break;
-        if (ret != -EAGAIN)
-            goto cleanup;
-        usleep(100000);
+        int retry_count = 0;
+        while (dev_state.running && retry_count < 2000)
+        {
+            int ret = setup_watchpoints();
+            if (ret == 0)
+            {
+                printf("[\x1b[32m*\x1b[0m] Watchpoints enabled successfully\n");
+                break;
+            }
+            if (errno != EAGAIN)
+            {
+                printf("[!] Watchpoint setup failed: %s (continuing without watchpoints)\n", strerror(errno));
+                break;
+            }
+            retry_count++;
+            usleep(100000);
+        }
     }
 
+    printf("[\x1b[32m*\x1b[0m] Starting event consumer...\n");
     while (dev_state.running)
     {
-        struct pciem_event event;
-        ssize_t ret = read(dev_state.pciem_fd, &event, sizeof(event));
+        int head = atomic_load(&dev_state.event_ring->head);
+        int tail = atomic_load(&dev_state.event_ring->tail);
+        
+        if (head == tail) {
+            continue;
+        }
 
-        if (!dev_state.running)
-            break;
+        struct pciem_event *event = &dev_state.event_ring->events[head];
 
-        if (ret == sizeof(event) && event.type == PCIEM_EVENT_MMIO_WRITE && event.bar == 0)
+        atomic_thread_fence(memory_order_acquire);
+
+        if (event->type == PCIEM_EVENT_MMIO_WRITE && event->bar == 0)
         {
-            if (event.offset == REG_CMD)
+            if (event->offset == REG_CMD)
             {
                 uint32_t cmd = dev_state.bar0[REG_CMD / 4];
                 if (cmd != 0)
@@ -440,7 +521,9 @@ int main(void)
                     dev_state.bar0[REG_STATUS / 4] = STATUS_BUSY;
                     if (dev_state.qemu_connected && (cmd == CMD_EXECUTE_CMDBUF || cmd == CMD_DMA_FRAME))
                     {
-                        forward_command_to_qemu();
+                        if (forward_command_to_qemu() < 0) {
+                            printf("[!] Failed to forward command to QEMU!\n");
+                        }
                     }
                     else
                     {
@@ -449,10 +532,11 @@ int main(void)
                 }
             }
         }
+        atomic_store(&dev_state.event_ring->head, (head + 1) % PCIEM_RING_SIZE);
     }
 
 cleanup:
-    printf("\n[*] Exit\n");
+    printf("\n[\x1b[31m*\x1b[0m] Exit\n");
 
     if (dev_state.qemu_connected)
     {
@@ -463,6 +547,13 @@ cleanup:
             free(dev_state.dma_bounce_buf);
         }
     }
+
+    if (dev_state.event_ring && dev_state.event_ring != MAP_FAILED)
+        munmap((void*)dev_state.event_ring, sizeof(struct pciem_shared_ring));
+    if (dev_state.bar0 && dev_state.bar0 != MAP_FAILED)
+        munmap((void*)dev_state.bar0, dev_state.bar0_size);
+    if (dev_state.bar2 && dev_state.bar2 != MAP_FAILED)
+        munmap((void*)dev_state.bar2, dev_state.bar2_size);
 
     if (dev_state.qemu_sock >= 0)
         close(dev_state.qemu_sock);

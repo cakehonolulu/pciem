@@ -19,7 +19,7 @@
 #include "pciem_p2p.h"
 #include "pciem_userspace.h"
 
-#define MAX_EVENTS 256
+#define MAX_EVENTS 4096
 
 static int pciem_device_release(struct inode *inode, struct file *file);
 static ssize_t pciem_device_read(struct file *file, char __user *buf, size_t count, loff_t *ppos);
@@ -262,7 +262,7 @@ void pciem_userspace_destroy(struct pciem_userspace_state *us)
 
     if (us->shared_ring_page)
     {
-        __free_page(us->shared_ring_page);
+        __free_pages(us->shared_ring_page, get_order(sizeof(struct pciem_shared_ring)));
     }
 
     kfree(us);
@@ -274,6 +274,20 @@ void pciem_userspace_queue_event(struct pciem_userspace_state *us, struct pciem_
         return;
 
     event->timestamp = ktime_get_ns();
+
+    if (us->shared_ring) {
+        int tail = atomic_read(&us->shared_ring->tail);
+        int next_tail = (tail + 1) % PCIEM_RING_SIZE;
+        int head = atomic_read(&us->shared_ring->head);
+
+        if (next_tail != head) {
+            memcpy(&us->shared_ring->events[tail], event, sizeof(*event));
+
+            smp_wmb();
+
+            atomic_set(&us->shared_ring->tail, next_tail);
+        }
+    }
 
     if (!event_ring_push(us, event))
     {
@@ -419,7 +433,9 @@ static int pciem_device_mmap(struct file *file, struct vm_area_struct *vma)
 
     if (!us->shared_ring_page)
     {
-        us->shared_ring_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+        int order = get_order(sizeof(struct pciem_shared_ring));
+
+        us->shared_ring_page = alloc_pages(GFP_KERNEL | __GFP_ZERO | __GFP_COMP, order);
         if (!us->shared_ring_page)
             return -ENOMEM;
 
@@ -429,7 +445,7 @@ static int pciem_device_mmap(struct file *file, struct vm_area_struct *vma)
     }
 
     pfn = page_to_pfn(us->shared_ring_page);
-    ret = remap_pfn_range(vma, vma->vm_start, pfn, PAGE_SIZE, vma->vm_page_prot);
+    ret = remap_pfn_range(vma, vma->vm_start, pfn, vma->vm_end - vma->vm_start, vma->vm_page_prot);
 
     if (ret == 0)
         pr_info("Shared ring mmap successful\n");
@@ -664,7 +680,7 @@ static long pciem_ioctl_dma(struct pciem_userspace_state *us, struct pciem_dma_o
     if (copy_from_user(&op, arg, sizeof(op)))
         return -EFAULT;
 
-    if (op.length == 0 || op.length > (1 << 20))
+    if (op.length == 0)
         return -EINVAL;
 
     kernel_buf = kmalloc(op.length, GFP_KERNEL);
@@ -752,7 +768,7 @@ static long pciem_ioctl_p2p(struct pciem_userspace_state *us, struct pciem_p2p_o
     if (copy_from_user(&op, arg, sizeof(op)))
         return -EFAULT;
 
-    if (op.length == 0 || op.length > (1 << 20))
+    if (op.length == 0)
         return -EINVAL;
 
     kernel_buf = kmalloc(op.length, GFP_KERNEL);

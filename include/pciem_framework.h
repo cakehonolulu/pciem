@@ -39,7 +39,7 @@ struct pciem_tlp
     uint64_t data;
 } __attribute__((packed));
 
-#define MAX_PENDING_REQS 256
+#define MAX_PENDING_REQS 4096
 struct pending_req
 {
     uint32_t id;
