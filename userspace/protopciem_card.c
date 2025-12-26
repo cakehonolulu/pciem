@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -54,6 +55,7 @@ struct device_state
     int pciem_fd;
     int instance_fd;
     int qemu_sock;
+    int event_fd;
     volatile int running;
     int qemu_connected;
     pthread_t qemu_thread;
@@ -361,6 +363,32 @@ static int setup_watchpoints(void)
     return ret;
 }
 
+static int setup_eventfd(void)
+{
+    struct pciem_eventfd_config efd_cfg;
+    
+    dev_state.event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (dev_state.event_fd < 0)
+    {
+        perror("Failed to create eventfd");
+        return -1;
+    }
+
+    efd_cfg.eventfd = dev_state.event_fd;
+    efd_cfg.reserved = 0;
+
+    if (ioctl(dev_state.pciem_fd, PCIEM_IOCTL_SET_EVENTFD, &efd_cfg) < 0)
+    {
+        perror("Failed to set eventfd");
+        close(dev_state.event_fd);
+        dev_state.event_fd = -1;
+        return -1;
+    }
+
+    printf("[\x1b[32m*\x1b[0m] Eventfd configured: fd=%d\n", dev_state.event_fd);
+    return 0;
+}
+
 int main(void)
 {
     int listen_sock;
@@ -379,6 +407,7 @@ int main(void)
         return 1;
     }
 
+    dev_state.event_fd = -1;
     dev_state.running = 1;
     dev_state.qemu_connected = 0;
     pthread_mutex_init(&dev_state.sock_lock, NULL);
@@ -497,13 +526,50 @@ int main(void)
         }
     }
 
+    if (setup_eventfd() < 0)
+    {
+        printf("[!] Failed to setup eventfd, falling back to busy polling\n");
+    }
+
     printf("[\x1b[32m*\x1b[0m] Starting event consumer...\n");
     while (dev_state.running)
     {
+        if (dev_state.event_fd >= 0)
+        {
+            fd_set rfds;
+            struct timeval tv;
+            int ret;
+
+            FD_ZERO(&rfds);
+            FD_SET(dev_state.event_fd, &rfds);
+
+            tv.tv_sec = 1;
+            tv.tv_usec = 0;
+
+            ret = select(dev_state.event_fd + 1, &rfds, NULL, NULL, &tv);
+            if (ret < 0)
+            {
+                if (errno == EINTR)
+                    continue;
+                perror("select() failed");
+                break;
+            }
+            else if (ret > 0)
+            {
+                uint64_t efd_count;
+                if (read(dev_state.event_fd, &efd_count, sizeof(efd_count)) < 0)
+                {
+                    if (errno != EAGAIN)
+                        perror("eventfd read failed");
+                }
+            }
+        }
+
         int head = atomic_load(&dev_state.event_ring->head);
         int tail = atomic_load(&dev_state.event_ring->tail);
         
         if (head == tail) {
+            // TODO: Maybe yield?
             continue;
         }
 
@@ -559,6 +625,8 @@ cleanup:
         close(dev_state.qemu_sock);
     if (listen_sock >= 0)
         close(listen_sock);
+    if (dev_state.event_fd >= 0)
+        close(dev_state.event_fd);
     if (dev_state.instance_fd >= 0)
         close(dev_state.instance_fd);
     if (dev_state.pciem_fd >= 0)

@@ -2,6 +2,7 @@
 
 #include <linux/anon_inodes.h>
 #include <linux/capability.h>
+#include <linux/eventfd.h>
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/hw_breakpoint.h>
@@ -225,6 +226,9 @@ struct pciem_userspace_state *pciem_userspace_create(void)
         us->watchpoints[i].perf_bp = NULL;
     }
 
+    us->eventfd = NULL;
+    spin_lock_init(&us->eventfd_lock);
+
     return us;
 }
 
@@ -245,6 +249,12 @@ void pciem_userspace_destroy(struct pciem_userspace_state *us)
             us->watchpoints[i].perf_bp = NULL;
             us->watchpoints[i].active = false;
         }
+    }
+
+    if (us->eventfd)
+    {
+        eventfd_ctx_put(us->eventfd);
+        us->eventfd = NULL;
     }
 
     for (i = 0; i < ARRAY_SIZE(us->pending_requests); i++)
@@ -270,6 +280,8 @@ void pciem_userspace_destroy(struct pciem_userspace_state *us)
 
 void pciem_userspace_queue_event(struct pciem_userspace_state *us, struct pciem_event *event)
 {
+    unsigned long flags;
+
     if (!us || !event)
         return;
 
@@ -294,6 +306,16 @@ void pciem_userspace_queue_event(struct pciem_userspace_state *us, struct pciem_
         pr_warn_ratelimited("Event queue full, dropping event seq=%llu\n", event->seq);
         return;
     }
+
+    atomic_set(&us->event_pending, 1);
+    wake_up_interruptible(&us->event_wait);
+
+    spin_lock_irqsave(&us->eventfd_lock, flags);
+    if (us->eventfd)
+    {
+        eventfd_signal(us->eventfd, 1);
+    }
+    spin_unlock_irqrestore(&us->eventfd_lock, flags);
 
     atomic_set(&us->event_pending, 1);
     wake_up_interruptible(&us->event_wait);
@@ -996,6 +1018,44 @@ static long pciem_ioctl_set_watchpoint(struct pciem_userspace_state *us, struct 
     return 0;
 }
 
+static long pciem_ioctl_set_eventfd(struct pciem_userspace_state *us, struct pciem_eventfd_config __user *arg)
+{
+    struct pciem_eventfd_config cfg;
+    struct eventfd_ctx *eventfd = NULL;
+    struct eventfd_ctx *old_eventfd = NULL;
+    unsigned long flags;
+    int fd;
+
+    if (copy_from_user(&cfg, arg, sizeof(cfg)))
+        return -EFAULT;
+
+    fd = cfg.eventfd;
+
+    if (fd >= 0)
+    {
+        eventfd = eventfd_ctx_fdget(fd);
+        if (IS_ERR(eventfd))
+        {
+            pr_err("Failed to get eventfd context for fd %d: %ld\n", fd, PTR_ERR(eventfd));
+            return PTR_ERR(eventfd);
+        }
+        pr_info("Registered eventfd %d for ring buffer notifications\n", fd);
+    }
+
+    spin_lock_irqsave(&us->eventfd_lock, flags);
+    old_eventfd = us->eventfd;
+    us->eventfd = eventfd;
+    spin_unlock_irqrestore(&us->eventfd_lock, flags);
+
+    if (old_eventfd)
+    {
+        eventfd_ctx_put(old_eventfd);
+        pr_info("Unregistered previous eventfd\n");
+    }
+
+    return 0;
+}
+
 static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct pciem_userspace_state *us = file->private_data;
@@ -1034,6 +1094,9 @@ static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned lon
 
     case PCIEM_IOCTL_SET_WATCHPOINT:
         return pciem_ioctl_set_watchpoint(us, (struct pciem_watchpoint_config __user *)arg);
+
+    case PCIEM_IOCTL_SET_EVENTFD:
+        return pciem_ioctl_set_eventfd(us, (struct pciem_eventfd_config __user *)arg);
 
     default:
         return -ENOTTY;

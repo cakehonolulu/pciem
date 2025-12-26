@@ -164,6 +164,12 @@ struct pciem_watchpoint_config
     uint32_t flags;
 };
 
+struct pciem_eventfd_config
+{
+    int32_t eventfd;
+    uint32_t reserved;
+};
+
 #define PCIEM_IOCTL_MAGIC 0xAF
 
 #define PCIEM_IOCTL_CREATE_DEVICE _IOWR(PCIEM_IOCTL_MAGIC, 10, struct pciem_create_device)
@@ -177,6 +183,7 @@ struct pciem_watchpoint_config
 #define PCIEM_IOCTL_P2P _IOWR(PCIEM_IOCTL_MAGIC, 18, struct pciem_p2p_op_user)
 #define PCIEM_IOCTL_GET_BAR_INFO _IOWR(PCIEM_IOCTL_MAGIC, 19, struct pciem_bar_info_query)
 #define PCIEM_IOCTL_SET_WATCHPOINT _IOW(PCIEM_IOCTL_MAGIC, 20, struct pciem_watchpoint_config)
+#define PCIEM_IOCTL_SET_EVENTFD _IOW(PCIEM_IOCTL_MAGIC, 21, struct pciem_eventfd_config)
 
 #define PCIEM_RING_SIZE 256
 
@@ -224,6 +231,9 @@ struct pciem_userspace_state
 
     struct pciem_watchpoint_info watchpoints[MAX_WATCHPOINTS];
     spinlock_t watchpoint_lock;
+
+    struct eventfd_ctx *eventfd;
+    spinlock_t eventfd_lock;
 };
 
 struct pciem_pending_request
