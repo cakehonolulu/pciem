@@ -104,7 +104,7 @@ struct pciem_root_complex
     unsigned int msi_irq;
     struct irq_work msi_irq_work;
     unsigned int pending_msi_irq;
-    struct pci_dev *protopciem_pdev;
+    struct pci_dev *pciem_pdev;
     struct pci_bus *root_bus;
     u8 cfg[256];
     struct mutex ctrl_lock;

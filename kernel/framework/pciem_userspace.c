@@ -945,7 +945,7 @@ static long pciem_ioctl_set_watchpoint(struct pciem_userspace_state *us, struct 
         return 0;
     }
 
-    pdev = us->rc->protopciem_pdev;
+    pdev = us->rc->pciem_pdev;
     if (!pdev)
     {
         pr_err("pciem_userspace: No pdev available\n");

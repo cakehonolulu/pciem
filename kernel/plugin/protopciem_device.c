@@ -96,7 +96,7 @@ static void proto_set_command_watchpoint(struct pciem_root_complex *v, bool enab
             return;
         }
 
-        struct pci_dev *pdev = v->protopciem_pdev;
+        struct pci_dev *pdev = v->pciem_pdev;
         if (!pdev)
         {
             pr_err("fwd: No pdev available for watchpoint\n");

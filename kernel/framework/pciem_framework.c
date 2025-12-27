@@ -151,7 +151,7 @@ EXPORT_SYMBOL(pciem_register_bar);
 
 void pciem_trigger_msi(struct pciem_root_complex *v)
 {
-    struct pci_dev *dev = v->protopciem_pdev;
+    struct pci_dev *dev = v->pciem_pdev;
     if (!dev || !dev->msi_enabled || !dev->irq)
     {
         pr_warn("Cannot trigger MSI: device not ready or MSI not enabled/irq=0\n");
@@ -591,7 +591,7 @@ static unsigned int shim_poll(struct file *file, poll_table *wait)
 static long shim_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct pciem_root_complex *v = file->private_data;
-    if (!v->protopciem_pdev)
+    if (!v->pciem_pdev)
     {
         return -ENODEV;
     }
@@ -696,7 +696,7 @@ static int shim_mmap(struct file *file, struct vm_area_struct *vma)
         return -EINVAL;
     }
 
-    return dma_mmap_coherent(&v->protopciem_pdev->dev, vma, v->shared_buf_vaddr, v->shared_buf_dma, size);
+    return dma_mmap_coherent(&v->pciem_pdev->dev, vma, v->shared_buf_vaddr, v->shared_buf_dma, size);
 }
 
 static const struct file_operations shim_fops = {
@@ -1247,8 +1247,8 @@ int pciem_complete_init(struct pciem_root_complex *v)
         }
     }
 
-    v->protopciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
-    if (!v->protopciem_pdev)
+    v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
+    if (!v->pciem_pdev)
     {
         pr_err("init: failed to find ProtoPCIem pci_dev");
         rc = -ENODEV;
@@ -1276,7 +1276,7 @@ int pciem_complete_init(struct pciem_root_complex *v)
 
     v->shared_buf_size = SHARED_BUF_SIZE;
     v->shared_buf_vaddr =
-        dma_alloc_coherent(&v->protopciem_pdev->dev, v->shared_buf_size, &v->shared_buf_dma, GFP_KERNEL);
+        dma_alloc_coherent(&v->pciem_pdev->dev, v->shared_buf_size, &v->shared_buf_dma, GFP_KERNEL);
     if (!v->shared_buf_vaddr)
     {
         pr_err("pciem: Failed to allocate shared bounce buffer\n");
@@ -1307,10 +1307,10 @@ fail_map:
         misc_deregister(&v->shim_miscdev);
     }
 fail_bus:
-    if (v->protopciem_pdev)
+    if (v->pciem_pdev)
     {
-        pci_dev_put(v->protopciem_pdev);
-        v->protopciem_pdev = NULL;
+        pci_dev_put(v->pciem_pdev);
+        v->pciem_pdev = NULL;
     }
     if (v->root_bus)
     {
@@ -1340,10 +1340,10 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
 
     irq_work_sync(&v->msi_irq_work);
 
-    if (v->protopciem_pdev)
+    if (v->pciem_pdev)
     {
-        pci_dev_put(v->protopciem_pdev);
-        v->protopciem_pdev = NULL;
+        pci_dev_put(v->pciem_pdev);
+        v->pciem_pdev = NULL;
     }
 
     if (pciem_get_mode() == PCIEM_MODE_QEMU)
