@@ -8,8 +8,6 @@
 #define SHARED_BUF_SIZE (4 * 1024 * 1024)
 
 #define DRIVER_NAME "pciem"
-#define CTRL_DEVICE_NAME "pciem_ctrl"
-#define PCIEM_IOCTL_MAGIC 0xAF
 
 #define SHIM_DEVICE_NAME "pciem_shim"
 
@@ -38,8 +36,6 @@ struct pciem_get_bar_args
     uint32_t padding;
     struct virt_bar_info info;
 };
-
-#define PCIEM_IOCTL_GET_BAR _IOWR(PCIEM_IOCTL_MAGIC, 1, struct pciem_get_bar_args)
 
 struct shim_dma_shared_op
 {

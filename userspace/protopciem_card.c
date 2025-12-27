@@ -400,10 +400,10 @@ int main(void)
         return 1;
     }
 
-    dev_state.pciem_fd = open("/dev/pciem_main", O_RDWR);
+    dev_state.pciem_fd = open("/dev/pciem", O_RDWR);
     if (dev_state.pciem_fd < 0)
     {
-        perror("Failed to open /dev/pciem_main");
+        perror("Failed to open /dev/pciem");
         return 1;
     }
 

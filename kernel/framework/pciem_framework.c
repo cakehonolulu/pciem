@@ -53,8 +53,8 @@ static DEFINE_MUTEX(pciem_devices_lock);
 static DEFINE_IDA(pciem_instance_ida);
 static DEFINE_MUTEX(pciem_registration_lock);
 
-static struct miscdevice pciem_main_dev;
-static const struct file_operations pciem_main_fops;
+static struct miscdevice pciem_dev;
+static const struct file_operations pciem_fops;
 
 int pciem_get_mode(void)
 {
@@ -929,117 +929,6 @@ static void vph_fill_config(struct pciem_root_complex *v)
     pciem_build_config_space(v);
 }
 
-static int vph_ctrl_open(struct inode *inode, struct file *file)
-{
-    struct miscdevice *misc = file->private_data;
-    struct pciem_root_complex *v = container_of(misc, struct pciem_root_complex, vph_miscdev);
-    file->private_data = v;
-    return 0;
-}
-
-static int vph_ctrl_mmap(struct file *file, struct vm_area_struct *vma)
-{
-    struct pciem_root_complex *v = file->private_data;
-    unsigned long size = vma->vm_end - vma->vm_start;
-    unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
-    int bar_index = -1;
-    struct pciem_bar_info *bar = NULL;
-    int i;
-
-    if (!v)
-    {
-        return -EINVAL;
-    }
-
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        if (v->bars[i].size == 0)
-        {
-            continue;
-        }
-
-        if (v->bars[i].res && offset >= v->bars[i].res->start && offset < v->bars[i].res->start + v->bars[i].size)
-        {
-            bar_index = i;
-            bar = &v->bars[i];
-            break;
-        }
-    }
-
-    if (bar_index < 0 || !bar)
-    {
-        pr_err("pciem: mmap offset 0x%lx does not match any BAR\n", offset);
-        return -EINVAL;
-    }
-
-    if (size > bar->size)
-    {
-        pr_err("pciem: mmap size 0x%lx exceeds BAR%d size 0x%llx\n", size, bar_index, (u64)bar->size);
-        return -EINVAL;
-    }
-
-    pr_info("pciem: mmap BAR%d (size 0x%lx, fault_intercept=%d)\n", bar_index, size, bar->intercept_page_faults);
-
-    if (bar->intercept_page_faults)
-    {
-    }
-    else
-    {
-        if (remap_pfn_range(vma, vma->vm_start, bar->phys_addr >> PAGE_SHIFT, size, vma->vm_page_prot))
-        {
-            return -EAGAIN;
-        }
-    }
-
-    return 0;
-}
-
-static long vph_ctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-    struct pciem_root_complex *v = file->private_data;
-    struct pciem_get_bar_args bar_args;
-
-    if (!v)
-    {
-        return -ENODEV;
-    }
-
-    guard(mutex)(&v->ctrl_lock);
-
-    switch (cmd)
-    {
-    case PCIEM_IOCTL_GET_BAR:
-        if (copy_from_user(&bar_args, (void __user *)arg, sizeof(bar_args)))
-            return -EFAULT;
-
-        if (bar_args.bar_index >= PCI_STD_NUM_BARS)
-            return -EINVAL;
-
-        if (!v->bars[bar_args.bar_index].res)
-            return -ENODEV;
-
-        bar_args.info.phys_start = (u64)v->bars[bar_args.bar_index].res->start;
-        bar_args.info.size = (u64)resource_size(v->bars[bar_args.bar_index].res);
-
-        if (copy_to_user((void __user *)arg, &bar_args, sizeof(bar_args)))
-            return -EFAULT;
-        break;
-
-    default:
-        return -EINVAL;
-    }
-
-    return 0;
-}
-
-static const struct file_operations vph_ctrl_fops = {
-    .owner = THIS_MODULE,
-    .open = vph_ctrl_open,
-    .unlocked_ioctl = vph_ctrl_ioctl,
-    .mmap = vph_ctrl_mmap,
-    .compat_ioctl = vph_ctrl_ioctl,
-};
-
 static int vph_emulator_thread(void *arg)
 {
     struct pciem_root_complex *v = arg;
@@ -1366,16 +1255,6 @@ int pciem_complete_init(struct pciem_root_complex *v)
         goto fail_bus;
     }
 
-    v->vph_miscdev.minor = MISC_DYNAMIC_MINOR;
-    v->vph_miscdev.name = v->ctrl_dev_name;
-    v->vph_miscdev.fops = &vph_ctrl_fops;
-    rc = misc_register(&v->vph_miscdev);
-    if (rc)
-    {
-        pr_err("init: misc_register (ctrl) failed %d", rc);
-        goto fail_bus;
-    }
-
     if (pciem_get_mode() == PCIEM_MODE_QEMU)
     {
         pr_info("init: Registering shim misc device for forwarding\n");
@@ -1387,7 +1266,7 @@ int pciem_complete_init(struct pciem_root_complex *v)
         if (rc)
         {
             pr_err("init: misc_register (shim) failed %d", rc);
-            goto fail_misc_ctrl;
+            goto fail_map;
         }
     }
 
@@ -1427,8 +1306,6 @@ fail_map:
     {
         misc_deregister(&v->shim_miscdev);
     }
-fail_misc_ctrl:
-    misc_deregister(&v->vph_miscdev);
 fail_bus:
     if (v->protopciem_pdev)
     {
@@ -1474,8 +1351,6 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
         misc_deregister(&v->shim_miscdev);
     }
 
-    misc_deregister(&v->vph_miscdev);
-
     if (v->root_bus)
     {
         pci_remove_root_bus(v->root_bus);
@@ -1512,12 +1387,12 @@ static int __init pciem_init(void)
             goto fail_userspace;
         }
 
-        pciem_main_dev.minor = MISC_DYNAMIC_MINOR;
-        pciem_main_dev.name = "pciem_main";
-        pciem_main_dev.fops = &pciem_main_fops;
-        pciem_main_dev.mode = 0666;
+        pciem_dev.minor = MISC_DYNAMIC_MINOR;
+        pciem_dev.name = "pciem";
+        pciem_dev.fops = &pciem_fops;
+        pciem_dev.mode = 0666;
 
-        ret = misc_register(&pciem_main_dev);
+        ret = misc_register(&pciem_dev);
         if (ret) {
             pr_err("init: Failed to register main device: %d\n", ret);
             goto fail_misc;
@@ -1546,7 +1421,7 @@ static void __exit pciem_exit(void)
     pr_info("exit: unloading pciem framework\n");
 
     if (mode == PCIEM_MODE_USERSPACE) {
-        misc_deregister(&pciem_main_dev);
+        misc_deregister(&pciem_dev);
         pciem_userspace_cleanup();
         pr_info("exit: Unregistered /dev/pciem_main\n");
     }
@@ -1689,7 +1564,7 @@ void pciem_unregister_ops(struct pciem_root_complex *v)
 }
 EXPORT_SYMBOL(pciem_unregister_ops);
 
-static int pciem_main_open(struct inode *inode, struct file *file)
+static int pciem_open(struct inode *inode, struct file *file)
 {
     struct pciem_userspace_state *us;
 
@@ -1706,56 +1581,56 @@ static int pciem_main_open(struct inode *inode, struct file *file)
     return 0;
 }
 
-static long pciem_main_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+static long pciem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     return pciem_device_fops.unlocked_ioctl(file, cmd, arg);
 }
 
-static int pciem_main_release(struct inode *inode, struct file *file)
+static int pciem_release(struct inode *inode, struct file *file)
 {
     if (pciem_device_fops.release)
         return pciem_device_fops.release(inode, file);
     return 0;
 }
 
-static ssize_t pciem_main_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t pciem_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
     if (pciem_device_fops.read)
         return pciem_device_fops.read(file, buf, count, ppos);
     return -EINVAL;
 }
 
-static ssize_t pciem_main_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+static ssize_t pciem_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
     if (pciem_device_fops.write)
         return pciem_device_fops.write(file, buf, count, ppos);
     return -EINVAL;
 }
 
-static __poll_t pciem_main_poll(struct file *file, struct poll_table_struct *wait)
+static __poll_t pciem_poll(struct file *file, struct poll_table_struct *wait)
 {
     if (pciem_device_fops.poll)
         return pciem_device_fops.poll(file, wait);
     return 0;
 }
 
-static int pciem_main_mmap(struct file *file, struct vm_area_struct *vma)
+static int pciem_mmap(struct file *file, struct vm_area_struct *vma)
 {
     if (pciem_device_fops.mmap)
         return pciem_device_fops.mmap(file, vma);
     return -EINVAL;
 }
 
-static const struct file_operations pciem_main_fops = {
+static const struct file_operations pciem_fops = {
     .owner = THIS_MODULE,
-    .open = pciem_main_open,
-    .release = pciem_main_release,
-    .read = pciem_main_read,
-    .write = pciem_main_write,
-    .poll = pciem_main_poll,
-    .unlocked_ioctl = pciem_main_ioctl,
-    .compat_ioctl = pciem_main_ioctl,
-    .mmap = pciem_main_mmap,
+    .open = pciem_open,
+    .release = pciem_release,
+    .read = pciem_read,
+    .write = pciem_write,
+    .poll = pciem_poll,
+    .unlocked_ioctl = pciem_ioctl,
+    .compat_ioctl = pciem_ioctl,
+    .mmap = pciem_mmap,
     .llseek = no_llseek,
 };
 
