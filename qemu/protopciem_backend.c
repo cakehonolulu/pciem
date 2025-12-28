@@ -10,52 +10,36 @@
 #include "qemu/timer.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
-#include <sys/ioctl.h>
-#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
-#define FATAL_ERROR(...)                                                                                               \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        printf("ProtoPCIem FATAL: " __VA_ARGS__);                                                                      \
-        printf("\n");                                                                                                  \
-        exit(1);                                                                                                       \
+#define QEMU_SOCKET_PATH "/tmp/pciem_qemu.sock"
+
+#define FATAL_ERROR(...)                                                       \
+    do {                                                                       \
+        printf("ProtoPCIem FATAL: " __VA_ARGS__);                             \
+        printf("\n");                                                          \
+        exit(1);                                                               \
     } while (0)
 
-static int readn(int fd, void *buf, size_t n)
-{
-    size_t r = 0;
-    while (r < n)
-    {
-        ssize_t m = read(fd, ((char *)buf) + r, n - r);
-        if (m == 0)
-            return 0;
-        if (m < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            return -1;
-        }
-        r += m;
-    }
-    return (int)r;
-}
+#define MSG_REGISTER_WRITE 1
+#define MSG_REGISTER_READ  2
+#define MSG_RAISE_IRQ      3
+#define MSG_DMA_READ       4
+#define MSG_DMA_WRITE      5
 
-static int writen(int fd, const void *buf, size_t n)
-{
-    size_t w = 0;
-    while (w < n)
-    {
-        ssize_t m = write(fd, ((const char *)buf) + w, n - w);
-        if (m <= 0)
-        {
-            if (errno == EINTR)
-                continue;
-            return -1;
-        }
-        w += m;
-    }
-    return (int)w;
-}
+struct qemu_msg {
+    uint32_t type;
+    uint32_t offset;
+    uint64_t value;
+    uint64_t addr;
+    uint32_t len;
+} __attribute__((packed));
+
+struct qemu_resp {
+    uint32_t status;
+    uint64_t value;
+} __attribute__((packed));
 
 static void gpu_draw_pixel(ProtoPCIemState *s, int x, int y, uint8_t r, uint8_t g, uint8_t b)
 {
@@ -198,10 +182,47 @@ static void backend_execute_command_buffer(ProtoPCIemState *s)
     }
 }
 
+static int dma_read_from_guest(ProtoPCIemState *s, uint64_t guest_addr,
+                                void *dst, uint32_t len)
+{
+    struct qemu_msg msg;
+    struct qemu_resp resp;
+
+    msg.type = MSG_DMA_READ;
+    msg.addr = guest_addr;
+    msg.len = len;
+
+    if (write(s->socket_fd, &msg, sizeof(msg)) != sizeof(msg)) {
+        perror("[QEMU] Failed to send DMA read request");
+        return -1;
+    }
+
+    if (read(s->socket_fd, &resp, sizeof(resp)) != sizeof(resp)) {
+        perror("[QEMU] Failed to receive DMA response");
+        return -1;
+    }
+
+    if (resp.status != 0) {
+        fprintf(stderr, "[QEMU] DMA read failed with status %d\n", resp.status);
+        return -1;
+    }
+
+    ssize_t total = 0;
+    while (total < len) {
+        ssize_t n = read(s->socket_fd, (uint8_t *)dst + total, len - total);
+        if (n <= 0) {
+            perror("[QEMU] Failed to read DMA data");
+            return -1;
+        }
+        total += n;
+    }
+
+    return 0;
+}
+
 static void backend_process_complete(void *opaque)
 {
     ProtoPCIemState *s = opaque;
-    uint64_t result = 0;
 
     switch (s->cmd)
     {
@@ -214,14 +235,8 @@ static void backend_process_complete(void *opaque)
         {
             if (len > s->cmd_buffer_size)
                 len = s->cmd_buffer_size;
-            struct shim_dma_shared_op op;
-            op.host_phys_addr = src_addr;
-            op.len = len;
-            if (ioctl(s->shim_fd, PCIEM_SHIM_IOCTL_DMA_READ_SHARED, &op) < 0)
-            {
-                perror("[QEMU] DMA_READ_SHARED failed");
-            }
-            else
+
+            if (dma_read_from_guest(s, src_addr, s->cmd_buffer, len) == 0)
             {
                 backend_execute_command_buffer(s);
             }
@@ -232,112 +247,84 @@ static void backend_process_complete(void *opaque)
             {
                 FATAL_ERROR("DMA Frame size mismatch");
             }
-            else
+
+            if (dma_read_from_guest(s, src_addr, s->framebuffer, len) == 0)
             {
-                struct shim_dma_read_op op;
-                op.host_phys_addr = src_addr;
-                op.user_buf_addr = (uint64_t)(uintptr_t)s->framebuffer;
-                op.len = len;
-                if (ioctl(s->shim_fd, PCIEM_SHIM_IOCTL_DMA_READ, &op) < 0)
-                {
-                    perror("[QEMU] DMA_READ failed");
-                }
-                else
-                {
-                    backend_update_display(s);
-                }
+                backend_update_display(s);
             }
         }
 
         s->status |= STATUS_DONE;
         s->status &= ~STATUS_BUSY;
 
-        int zero = 0;
-        ioctl(s->shim_fd, PCIEM_SHIM_IOCTL_RAISE_IRQ, &zero);
+        struct qemu_msg msg;
+        msg.type = MSG_RAISE_IRQ;
+        msg.offset = s->status;
+        uint64_t result = ((uint64_t)s->result_hi << 32) | s->result_lo;
+        msg.value = result;
+
+        if (write(s->socket_fd, &msg, sizeof(msg)) != sizeof(msg))
+        {
+            perror("[QEMU] Failed to send IRQ notification");
+        }
         return;
     }
     default:
         FATAL_ERROR("Unknown command");
-        break;
     }
-
-    s->result_lo = result & 0xFFFFFFFF;
-    s->result_hi = result >> 32;
-    s->status |= STATUS_DONE;
-    s->status &= ~STATUS_BUSY;
-
-    int zero = 0;
-    ioctl(s->shim_fd, PCIEM_SHIM_IOCTL_RAISE_IRQ, &zero);
 }
 
-static void backend_handle_shim_event(void *opaque)
+static void backend_handle_socket_event(void *opaque)
 {
     ProtoPCIemState *s = PROTOPCIEM_BACKEND(opaque);
-    struct shim_req req;
-    struct shim_resp resp;
+    struct qemu_msg msg;
+    struct qemu_resp resp;
 
-    int len = readn(s->shim_fd, &req, sizeof(req));
-    if (len != sizeof(req))
+    ssize_t n = read(s->socket_fd, &msg, sizeof(msg));
+    if (n != sizeof(msg))
     {
-        if (len <= 0)
+        if (n <= 0)
         {
-            qemu_set_fd_handler(s->shim_fd, NULL, NULL, s);
-            close(s->shim_fd);
-            s->shim_fd = -1;
+            printf("[QEMU] Connection closed\n");
+            qemu_set_fd_handler(s->socket_fd, NULL, NULL, NULL);
+            close(s->socket_fd);
+            s->socket_fd = -1;
         }
         return;
     }
-    if (req.type == 1)
-    {
-        uint64_t val = 0;
-        switch (req.addr)
-        {
-        case REG_CONTROL:
-            val = s->control;
-            break;
-        case REG_STATUS:
-            val = s->status;
-            break;
-        case REG_CMD:
-            val = s->cmd;
-            break;
-        case REG_DATA:
-            val = s->data;
-            break;
-        case REG_RESULT_LO:
-            val = s->result_lo;
-            break;
-        case REG_RESULT_HI:
-            val = s->result_hi;
-            break;
-        case REG_DMA_SRC_LO:
-            val = s->dma_src_lo;
-            break;
-        case REG_DMA_SRC_HI:
-            val = s->dma_src_hi;
-            break;
-        case REG_DMA_DST_LO:
-            val = s->dma_dst_lo;
-            break;
-        case REG_DMA_DST_HI:
-            val = s->dma_dst_hi;
-            break;
-        case REG_DMA_LEN:
-            val = s->dma_len;
-            break;
+
+    resp.status = 0;
+    resp.value = 0;
+
+    switch (msg.type) {
+    case MSG_REGISTER_READ: {
+        switch (msg.offset) {
+        case REG_CONTROL:  resp.value = s->control; break;
+        case REG_STATUS:   resp.value = s->status; break;
+        case REG_CMD:      resp.value = s->cmd; break;
+        case REG_DATA:     resp.value = s->data; break;
+        case REG_RESULT_LO: resp.value = s->result_lo; break;
+        case REG_RESULT_HI: resp.value = s->result_hi; break;
+        case REG_DMA_SRC_LO: resp.value = s->dma_src_lo; break;
+        case REG_DMA_SRC_HI: resp.value = s->dma_src_hi; break;
+        case REG_DMA_DST_LO: resp.value = s->dma_dst_lo; break;
+        case REG_DMA_DST_HI: resp.value = s->dma_dst_hi; break;
+        case REG_DMA_LEN:  resp.value = s->dma_len; break;
+        default: resp.status = -1; break;
         }
-        resp.id = req.id;
-        resp.data = val;
-        writen(s->shim_fd, &resp, sizeof(resp));
+        if (write(s->socket_fd, &resp, sizeof(resp)) != sizeof(resp)) {
+            perror("[QEMU] Failed to send register read response");
+            return;
+        }
+
+        break;
     }
-    else if (req.type == 2)
-    {
-        switch (req.addr)
-        {
+
+    case MSG_REGISTER_WRITE: {
+        switch (msg.offset) {
         case REG_CONTROL:
-            s->control = req.data;
-            if (req.data & 2)
-            {
+            s->control = msg.value;
+            if (msg.value & 2) {
                 s->status = 0;
                 s->cmd = 0;
                 s->data = 0;
@@ -345,43 +332,40 @@ static void backend_handle_shim_event(void *opaque)
                 backend_update_display(s);
             }
             break;
-        case REG_STATUS:
-            s->status = req.data;
-            break;
+        case REG_STATUS:   s->status = msg.value; break;
+        case REG_DATA:     s->data = msg.value; break;
+        case REG_RESULT_LO: s->result_lo = msg.value; break;
+        case REG_RESULT_HI: s->result_hi = msg.value; break;
+        case REG_DMA_SRC_LO: s->dma_src_lo = msg.value; break;
+        case REG_DMA_SRC_HI: s->dma_src_hi = msg.value; break;
+        case REG_DMA_DST_LO: s->dma_dst_lo = msg.value; break;
+        case REG_DMA_DST_HI: s->dma_dst_hi = msg.value; break;
+        case REG_DMA_LEN:  s->dma_len = msg.value; break;
         case REG_CMD:
-            s->cmd = req.data;
-            s->status &= ~2;
-            s->status |= 1;
+            s->cmd = msg.value;
+            s->status &= ~STATUS_DONE;
+            s->status |= STATUS_BUSY;
             backend_process_complete(s);
             break;
-        case REG_DATA:
-            s->data = req.data;
-            break;
-        case REG_RESULT_LO:
-            s->result_lo = req.data;
-            break;
-        case REG_RESULT_HI:
-            s->result_hi = req.data;
-            break;
-        case REG_DMA_SRC_LO:
-            s->dma_src_lo = req.data;
-            break;
-        case REG_DMA_SRC_HI:
-            s->dma_src_hi = req.data;
-            break;
-        case REG_DMA_DST_LO:
-            s->dma_dst_lo = req.data;
-            break;
-        case REG_DMA_DST_HI:
-            s->dma_dst_hi = req.data;
-            break;
-        case REG_DMA_LEN:
-            s->dma_len = req.data;
+        default:
+            resp.status = -1;
             break;
         }
-        resp.id = req.id;
-        resp.data = 0;
-        writen(s->shim_fd, &resp, sizeof(resp));
+        if (write(s->socket_fd, &resp, sizeof(resp)) != sizeof(resp)) {
+            perror("[QEMU] Failed to send register write response");
+            return;
+        }
+        break;
+    }
+
+    default:
+        printf("[QEMU] Unknown message type: %d\n", msg.type);
+        resp.status = -1;
+        if (write(s->socket_fd, &resp, sizeof(resp)) != sizeof(resp)) {
+            perror("[QEMU] Failed to send error response");
+            return;
+        }
+        break;
     }
 }
 
@@ -416,32 +400,51 @@ static void protopciem_backend_realize(DeviceState *dev, Error **errp)
 {
     ProtoPCIemState *s = PROTOPCIEM_BACKEND(dev);
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+    struct sockaddr_un addr;
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &backend_ops, s, "protopciem-backend", 0x1000);
+    memory_region_init_io(&s->iomem, OBJECT(s), &backend_ops, s,
+                         "protopciem-backend", 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
 
-    s->shim_fd = open("/dev/pciem_shim", O_RDWR);
-    if (s->shim_fd < 0)
-    {
-        perror("Failed to open /dev/pciem_shim");
+    printf("[QEMU] Connecting to userspace emulator at %s\n", QEMU_SOCKET_PATH);
+
+    s->socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s->socket_fd < 0) {
+        perror("[QEMU] Failed to create socket");
         return;
     }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, QEMU_SOCKET_PATH, sizeof(addr.sun_path) - 1);
+
+    int retries = 5;
+    while (retries-- > 0) {
+        if (connect(s->socket_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            printf("[QEMU] Connected to userspace emulator!\n");
+            break;
+        }
+        printf("[QEMU] Connection failed, retrying... (%d left)\n", retries);
+        sleep(1);
+    }
+
+    if (retries < 0) {
+        perror("[QEMU] Failed to connect to userspace emulator");
+        close(s->socket_fd);
+        return;
+    }
+
+    qemu_set_fd_handler(s->socket_fd, backend_handle_socket_event, NULL, s);
 
     s->cmd_buffer_size = CMD_BUFFER_SIZE;
-    s->cmd_buffer = mmap(NULL, s->cmd_buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED, s->shim_fd, 0);
-    if (s->cmd_buffer == MAP_FAILED)
-    {
-        perror("Failed to mmap shared command buffer");
-        close(s->shim_fd);
-        return;
-    }
-
-    qemu_set_fd_handler(s->shim_fd, backend_handle_shim_event, NULL, s);
-
+    s->cmd_buffer = g_malloc0(s->cmd_buffer_size);
     s->framebuffer = g_malloc0(FB_SIZE);
+
     s->con = graphic_console_init(dev, 0, &backend_gfx_ops, s);
     qemu_console_resize(s->con, FB_WIDTH, FB_HEIGHT);
+
+    printf("[QEMU] Backend initialized\n");
 }
 
 static void protopciem_backend_class_init(ObjectClass *klass, const void *data)

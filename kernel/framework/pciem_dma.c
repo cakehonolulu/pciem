@@ -18,7 +18,7 @@ static int translate_iova(struct pciem_root_complex *v, u64 guest_iova, size_t l
     int max_pages;
     phys_addr_t *phys_pages;
 
-    domain = iommu_get_domain_for_dev(&v->protopciem_pdev->dev);
+    domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
 
     max_pages = (PAGE_ALIGN(guest_iova + len) - (guest_iova & PAGE_MASK)) >> PAGE_SHIFT;
 

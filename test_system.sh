@@ -26,62 +26,25 @@ fi
 
 log_info "Building kernel modules..."
 make clean
-make modules
+make all
 
 log_info "Unloading all related modules..."
 sudo rmmod protopciem_driver 2>/dev/null || true
-sudo rmmod protopciem_device 2>/dev/null || true
 sudo rmmod pciem 2>/dev/null || true
 sleep 1
 
-if [[ "$1" == "forwarding" ]]; then
-    log_info "Loading pciem in QEMU Forwarding mode"
-    /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 kernel/pciem.ko
-    sudo insmod kernel/pciem.ko use_qemu_forwarding=1 pciem_phys_regions="bar0:0x700000000:0x10000,bar2:0x700100000:0x100000"
-else
-    log_info "Loading pciem in default (internal emulation) mode"
-    /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 kernel/pciem.ko
-    sudo insmod kernel/pciem.ko
-fi
+log_info "Loading pciem"
+/usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 kernel/pciem.ko
+sudo insmod kernel/pciem.ko pciem_phys_regions="bar0:0x1bf000000:0x10000,bar2:0x1bf100000:0x100000"
 sleep 1
 
-/usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 ~/signing_key.priv ~/signing_key.x509 kernel/plugin/protopciem_device.ko
-log_info "Loading ProtoPCIem device plugin..."
-sudo insmod kernel/plugin/protopciem_device.ko
-sleep 1
+sudo ./userspace/protopciem_card &
 
-if ! check_module pciem; then
-    log_error "Failed to load pciem framework"
-    exit 1
-fi
-if ! check_module protopciem_device; then
-    log_error "Failed to load protopciem_device plugin"
-    exit 1
-fi
+sleep 1
 
 if ! lspci -d 1f0c:0001 &>/dev/null; then
 log_error "Virtual PCI device not found!"
 exit 1
-fi
-
-log_info "Checking device files..."
-if [[ "$1" == "forwarding" ]]; then
-    if [ ! -c /dev/pciem_shim ]; then
-        log_error "/dev/pciem_shim not found (needed for forwarding)"
-        exit 1
-    fi
-    log_info "/dev/pciem_shim exists"
-fi
-
-if [ ! -c /dev/pciem_ctrl ]; then
-log_error "/dev/pciem_ctrl not found"
-exit 1
-fi
-log_info "/dev/pciem_ctrl exists"
-
-if [[ "$1" == "forwarding" ]]; then
-    log_warn "Forwarding mode enabled. Please start QEMU now."
-    log_warn "QEMU will connect directly to /dev/pciem_shim."
 fi
 
 log_info "Loading ProtoPCIem driver..."

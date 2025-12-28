@@ -47,6 +47,7 @@ typedef struct ProtoPCIemState
     qemu_irq irq;
 
     int shim_fd;
+    int socket_fd;
 } ProtoPCIemState;
 
 #endif
