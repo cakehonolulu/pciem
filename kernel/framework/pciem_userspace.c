@@ -520,10 +520,7 @@ static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct 
         struct pciem_cap_msi_userspace *msi_cfg;
         struct pciem_cap_msi_config msi;
 
-        if (cfg.cap_size < sizeof(*msi_cfg))
-            return -EINVAL;
-
-        msi_cfg = (struct pciem_cap_msi_userspace *)cfg.cap_data;
+        msi_cfg = &cfg.msi;
         msi.num_vectors_log2 = msi_cfg->num_vectors_log2;
         msi.has_64bit = msi_cfg->has_64bit;
         msi.has_per_vector_masking = msi_cfg->has_masking;
@@ -536,10 +533,7 @@ static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct 
         struct pciem_cap_msix_userspace *msix_cfg;
         struct pciem_cap_msix_config msix;
 
-        if (cfg.cap_size < sizeof(*msix_cfg))
-            return -EINVAL;
-
-        msix_cfg = (struct pciem_cap_msix_userspace *)cfg.cap_data;
+        msix_cfg = &cfg.msix;
         msix.bar_index = msix_cfg->bar_index;
         msix.table_offset = msix_cfg->table_offset;
         msix.pba_offset = msix_cfg->pba_offset;

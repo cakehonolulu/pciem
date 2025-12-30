@@ -25,13 +25,6 @@ struct pciem_bar_config
     uint32_t reserved;
 };
 
-struct pciem_cap_config
-{
-    uint32_t cap_type;
-    uint32_t cap_size;
-    uint8_t cap_data[256];
-};
-
 struct pciem_cap_msi_userspace
 {
     uint8_t num_vectors_log2;
@@ -48,6 +41,15 @@ struct pciem_cap_msix_userspace
     uint32_t pba_offset;
     uint16_t table_size;
     uint16_t reserved2;
+};
+
+struct pciem_cap_config
+{
+    uint32_t cap_type;
+    union {
+        struct pciem_cap_msi_userspace msi;
+        struct pciem_cap_msix_userspace msix;
+    };
 };
 
 struct pciem_config_space

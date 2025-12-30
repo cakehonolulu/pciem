@@ -1,3 +1,4 @@
+#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/pci_regs.h>
@@ -56,7 +57,7 @@ struct device_state
     int instance_fd;
     int qemu_sock;
     int event_fd;
-    volatile int running;
+    atomic_t running;
     int qemu_connected;
     pthread_t qemu_thread;
     uint8_t *dma_bounce_buf;
@@ -71,10 +72,20 @@ struct device_state
 
 static struct device_state dev_state;
 
+static int dev_running(struct device_state *st)
+{
+    return atomic_load(&st->running);
+}
+
+static void dev_stop(struct device_state *st)
+{
+    atomic_store(&st->running, 0);
+}
+
 static void signal_handler(int signum)
 {
     printf("\n[\x1b[31m*\x1b[0m] %d received, trying to exit...\n", signum);
-    dev_state.running = 0;
+    dev_stop(&dev_state);
 }
 
 static int create_qemu_socket(void)
@@ -232,7 +243,7 @@ static void *qemu_handler_thread(void *arg)
     struct qemu_resp resp;
     uint32_t header;
 
-    while (dev_state.running && dev_state.qemu_connected)
+    while (dev_running(&dev_state) && dev_state.qemu_connected)
     {
         ssize_t n = read(dev_state.qemu_sock, &header, sizeof(header));
         if (n != sizeof(header))
@@ -389,9 +400,170 @@ static int setup_eventfd(void)
     return 0;
 }
 
+static void handle_bar0_write(struct device_state *st, struct pciem_event *event)
+{
+    volatile uint32_t *bar0 = st->bar0;
+
+    switch (event->offset)
+    {
+    case REG_CMD: {
+        uint32_t cmd = bar0[REG_CMD / 4];
+
+        if (!cmd)
+            return;
+
+        bar0[REG_STATUS / 4] = STATUS_BUSY;
+        if (st->qemu_connected &&
+            (cmd == CMD_EXECUTE_CMDBUF || cmd == CMD_DMA_FRAME))
+        {
+            if (forward_command_to_qemu() < 0)
+                printf("[!] Failed to forward command to QEMU!\n");
+        } else {
+            process_command_local();
+        }
+        break;
+    }
+    default:
+        return;
+    }
+}
+
+static void handle_event(struct device_state *st, struct pciem_event *event)
+{
+    if (event->type == PCIEM_EVENT_MMIO_WRITE && event->bar == 0)
+        handle_bar0_write(st, event);
+}
+
+static int register_device(struct device_state *st)
+{
+    struct pciem_create_device create = {0};
+    struct pciem_bar_config bar0 = {
+        .bar_index = 0,
+        .size = PCIEM_BAR0_SIZE,
+        .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64,
+    };
+    struct pciem_bar_config bar2 = {
+        .bar_index = 2,
+        .size = PCIEM_BAR2_SIZE,
+        .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 |
+                 PCI_BASE_ADDRESS_MEM_PREFETCH,
+    };
+    struct pciem_config_space cfg = {
+        .vendor_id = PCIEM_PCI_VENDOR_ID,
+        .device_id = PCIEM_PCI_DEVICE_ID,
+        .class_code = {0x00, 0x00, 0x0b}
+    };
+    struct pciem_cap_config cap = {
+        .cap_type = PCIEM_CAP_MSI,
+        .msi = {
+            .has_64bit = 1,
+            .has_masking = 1,
+        },
+    };
+
+    st->pciem_fd = open("/dev/pciem", O_RDWR);
+    if (st->pciem_fd < 0) {
+        warn("open(/dev/pciem)");
+        return -1;
+    }
+
+    ioctl(st->pciem_fd, PCIEM_IOCTL_CREATE_DEVICE, &create);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar0);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar2);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_CAPABILITY, &cap);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_SET_CONFIG, &cfg);
+
+    st->instance_fd = ioctl(st->pciem_fd, PCIEM_IOCTL_REGISTER, 0);
+    if (st->instance_fd < 0) {
+        warn("PCIEM_IOCTL_REGISTER");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int map_device(struct device_state *st)
+{
+    st->bar0_size = PCIEM_BAR0_SIZE;
+    st->bar0 = mmap(NULL, dev_state.bar0_size, PROT_READ | PROT_WRITE,
+                    MAP_SHARED, st->instance_fd, 0 * 4096);
+    if (st->bar0 == MAP_FAILED) {
+        warn("mmap BAR0 failed");
+        return -1;
+    }
+
+    st->bar2_size = PCIEM_BAR2_SIZE;
+    st->bar2 = mmap(NULL, dev_state.bar2_size, PROT_READ | PROT_WRITE,
+                    MAP_SHARED, st->instance_fd, 2 * 4096);
+    if (st->bar2 == MAP_FAILED) {
+        warn("mmap BAR2 failed");
+        return -1;
+    }
+
+    printf("[\x1b[32m*\x1b[0m] BARs mapped successfully via Instance FD\n");
+
+    st->event_ring = mmap(NULL, sizeof(struct pciem_shared_ring),
+                          PROT_READ | PROT_WRITE, MAP_SHARED,
+                          st->pciem_fd, 0);
+    if (st->event_ring == MAP_FAILED) {
+        warn("mmap shared event ring failed");
+        return -1;
+    }
+
+    return 0;
+}
+
+static void init_device(struct device_state *st)
+{
+    st->pciem_fd = -1;
+
+    pthread_mutex_init(&st->sock_lock, NULL);
+    pthread_cond_init(&st->ack_cond, NULL);
+
+    st->instance_fd = -1;
+    atomic_store(&st->running, 0);
+    st->qemu_connected = 0;
+
+    st->event_ring = MAP_FAILED;
+    st->bar0 = MAP_FAILED;
+    st->bar2 = MAP_FAILED;
+
+    st->qemu_sock = -1;
+    st->dma_bounce_buf = NULL;
+    st->event_fd = -1;
+}
+
+static void destroy_device(struct device_state *st)
+{
+    if (st->event_fd >= 0)
+        close(st->event_fd);
+
+    if (st->dma_bounce_buf)
+        free(st->dma_bounce_buf);
+
+    if (st->qemu_sock >= 0)
+        close(st->qemu_sock);
+
+    if (st->event_ring != MAP_FAILED)
+        munmap(st->event_ring, sizeof(struct pciem_shared_ring));
+    if (st->bar2 != MAP_FAILED)
+        munmap((void *)st->bar2, st->bar2_size);
+    if (st->bar0 != MAP_FAILED)
+        munmap((void *)st->bar0, st->bar0_size);
+
+    if (st->instance_fd >= 0)
+        close(st->instance_fd);
+
+    pthread_mutex_destroy(&st->sock_lock);
+    pthread_cond_destroy(&st->ack_cond);
+
+    if (st->pciem_fd >= 0)
+        close(st->pciem_fd);
+}
+
 int main(void)
 {
-    int listen_sock;
+    int listen_sock = -1;
     struct sigaction sa;
 
     if (geteuid() != 0)
@@ -400,84 +572,20 @@ int main(void)
         return 1;
     }
 
-    dev_state.pciem_fd = open("/dev/pciem", O_RDWR);
-    if (dev_state.pciem_fd < 0)
-    {
-        perror("Failed to open /dev/pciem");
-        return 1;
-    }
+    init_device(&dev_state);
+    if (register_device(&dev_state) < 0)
+        goto cleanup;
 
-    dev_state.event_fd = -1;
-    dev_state.running = 1;
-    dev_state.qemu_connected = 0;
-    pthread_mutex_init(&dev_state.sock_lock, NULL);
-    pthread_cond_init(&dev_state.ack_cond, NULL);
+    printf("[\x1b[32m*\x1b[0m] Device registered, got instance FD: %d\n",
+       dev_state.instance_fd);
+
+    if (map_device(&dev_state) < 0)
+        goto cleanup;
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
-
-    struct pciem_create_device create;
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_CREATE_DEVICE, &create);
-
-    struct pciem_bar_config bar0 = {.bar_index = 0,
-                                    .size = PCIEM_BAR0_SIZE,
-                                    .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64};
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar0);
-
-    struct pciem_bar_config bar2 = {.bar_index = 2,
-                                    .size = PCIEM_BAR2_SIZE,
-                                    .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 |
-                                             PCI_BASE_ADDRESS_MEM_PREFETCH};
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar2);
-
-    struct pciem_cap_msi_userspace msi_data = {.has_64bit = 1, .has_masking = 1};
-    struct pciem_cap_config msi = {.cap_type = PCIEM_CAP_MSI, .cap_size = sizeof(msi_data)};
-    memcpy(msi.cap_data, &msi_data, sizeof(msi_data));
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_ADD_CAPABILITY, &msi);
-
-    struct pciem_config_space cfg = {
-        .vendor_id = PCIEM_PCI_VENDOR_ID, .device_id = PCIEM_PCI_DEVICE_ID, .class_code = {0x00, 0x00, 0x0b}};
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_SET_CONFIG, &cfg);
-
-    int ret_fd = ioctl(dev_state.pciem_fd, PCIEM_IOCTL_REGISTER, 0);
-    if (ret_fd < 0) {
-        perror("IOCTL_REGISTER failed");
-        goto cleanup;
-    }
-    dev_state.instance_fd = ret_fd;
-    printf("[\x1b[32m*\x1b[0m] Device registered, got instance FD: %d\n",
-       dev_state.instance_fd);
-
-    dev_state.bar0_size = PCIEM_BAR0_SIZE;
-    dev_state.bar0 = mmap(NULL, dev_state.bar0_size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED, dev_state.instance_fd, 0 * 4096);
-
-    if (dev_state.bar0 == MAP_FAILED)
-    {
-        perror("mmap BAR0 failed");
-        return -1;
-    }
-
-    dev_state.bar2_size = PCIEM_BAR2_SIZE;
-    dev_state.bar2 = mmap(NULL, dev_state.bar2_size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED, dev_state.instance_fd, 2 * 4096);
-
-    if (dev_state.bar2 == MAP_FAILED)
-    {
-        perror("mmap BAR2 failed");
-        return -1;
-    }
-
-    printf("[\x1b[32m*\x1b[0m] BARs mapped successfully via Instance FD\n");
-
-    dev_state.event_ring = mmap(NULL, sizeof(struct pciem_shared_ring), PROT_READ | PROT_WRITE,
-                                 MAP_SHARED, dev_state.pciem_fd, 0);
-    if (dev_state.event_ring == MAP_FAILED) {
-        perror("mmap shared event ring failed");
-        goto cleanup;
-    }
 
     listen_sock = create_qemu_socket();
     if (listen_sock < 0)
@@ -506,7 +614,7 @@ int main(void)
 
     {
         int retry_count = 0;
-        while (dev_state.running && retry_count < 2000)
+        while (dev_running(&dev_state) && retry_count < 2000)
         {
             int ret = setup_watchpoints();
             if (ret == 0)
@@ -530,7 +638,7 @@ int main(void)
     }
 
     printf("[\x1b[32m*\x1b[0m] Starting event consumer...\n");
-    while (dev_state.running)
+    while (dev_running(&dev_state))
     {
         if (dev_state.event_fd >= 0)
         {
@@ -574,28 +682,7 @@ int main(void)
         struct pciem_event *event = &dev_state.event_ring->events[head];
 
         atomic_thread_fence(memory_order_acquire);
-
-        if (event->type == PCIEM_EVENT_MMIO_WRITE && event->bar == 0)
-        {
-            if (event->offset == REG_CMD)
-            {
-                uint32_t cmd = dev_state.bar0[REG_CMD / 4];
-                if (cmd != 0)
-                {
-                    dev_state.bar0[REG_STATUS / 4] = STATUS_BUSY;
-                    if (dev_state.qemu_connected && (cmd == CMD_EXECUTE_CMDBUF || cmd == CMD_DMA_FRAME))
-                    {
-                        if (forward_command_to_qemu() < 0) {
-                            printf("[!] Failed to forward command to QEMU!\n");
-                        }
-                    }
-                    else
-                    {
-                        process_command_local();
-                    }
-                }
-            }
-        }
+        handle_event(&dev_state, event);
         atomic_store(&dev_state.event_ring->head, (head + 1) % PCIEM_RING_SIZE);
     }
 
@@ -604,31 +691,19 @@ cleanup:
 
     if (dev_state.qemu_connected)
     {
-        dev_state.running = 0;
+        dev_stop(&dev_state);
         pthread_join(dev_state.qemu_thread, NULL);
         if (dev_state.dma_bounce_buf)
         {
             free(dev_state.dma_bounce_buf);
+            dev_state.dma_bounce_buf = NULL;
         }
     }
 
-    if (dev_state.event_ring && dev_state.event_ring != MAP_FAILED)
-        munmap((void*)dev_state.event_ring, sizeof(struct pciem_shared_ring));
-    if (dev_state.bar0 && dev_state.bar0 != MAP_FAILED)
-        munmap((void*)dev_state.bar0, dev_state.bar0_size);
-    if (dev_state.bar2 && dev_state.bar2 != MAP_FAILED)
-        munmap((void*)dev_state.bar2, dev_state.bar2_size);
-
-    if (dev_state.qemu_sock >= 0)
-        close(dev_state.qemu_sock);
     if (listen_sock >= 0)
         close(listen_sock);
-    if (dev_state.event_fd >= 0)
-        close(dev_state.event_fd);
-    if (dev_state.instance_fd >= 0)
-        close(dev_state.instance_fd);
-    if (dev_state.pciem_fd >= 0)
-        close(dev_state.pciem_fd);
+
+    destroy_device(&dev_state);
 
     unlink(QEMU_SOCKET_PATH);
     return 0;
