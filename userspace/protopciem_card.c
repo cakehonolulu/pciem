@@ -56,7 +56,7 @@ struct device_state
     int instance_fd;
     int qemu_sock;
     int event_fd;
-    volatile int running;
+    atomic_t running;
     int qemu_connected;
     pthread_t qemu_thread;
     uint8_t *dma_bounce_buf;
@@ -71,10 +71,20 @@ struct device_state
 
 static struct device_state dev_state;
 
+static int dev_running(struct device_state *st)
+{
+    return atomic_load(&st->running);
+}
+
+static void dev_stop(struct device_state *st)
+{
+    atomic_store(&st->running, 0);
+}
+
 static void signal_handler(int signum)
 {
     printf("\n[\x1b[31m*\x1b[0m] %d received, trying to exit...\n", signum);
-    dev_state.running = 0;
+    dev_stop(&dev_state);
 }
 
 static int create_qemu_socket(void)
@@ -232,7 +242,7 @@ static void *qemu_handler_thread(void *arg)
     struct qemu_resp resp;
     uint32_t header;
 
-    while (dev_state.running && dev_state.qemu_connected)
+    while (dev_running(&dev_state) && dev_state.qemu_connected)
     {
         ssize_t n = read(dev_state.qemu_sock, &header, sizeof(header));
         if (n != sizeof(header))
@@ -397,7 +407,7 @@ static void init_device(struct device_state *st)
     pthread_cond_init(&st->ack_cond, NULL);
 
     st->instance_fd = -1;
-    st->running = 0;
+    atomic_store(&st->running, 0);
     st->qemu_connected = 0;
 
     st->event_ring = MAP_FAILED;
@@ -550,7 +560,7 @@ int main(void)
 
     {
         int retry_count = 0;
-        while (dev_state.running && retry_count < 2000)
+        while (dev_running(&dev_state) && retry_count < 2000)
         {
             int ret = setup_watchpoints();
             if (ret == 0)
@@ -574,7 +584,7 @@ int main(void)
     }
 
     printf("[\x1b[32m*\x1b[0m] Starting event consumer...\n");
-    while (dev_state.running)
+    while (dev_running(&dev_state))
     {
         if (dev_state.event_fd >= 0)
         {
@@ -648,7 +658,7 @@ cleanup:
 
     if (dev_state.qemu_connected)
     {
-        dev_state.running = 0;
+        dev_stop(&dev_state);
         pthread_join(dev_state.qemu_thread, NULL);
         if (dev_state.dma_bounce_buf)
         {
