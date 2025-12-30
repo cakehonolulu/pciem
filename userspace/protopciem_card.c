@@ -1,3 +1,4 @@
+#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/pci_regs.h>
@@ -399,6 +400,54 @@ static int setup_eventfd(void)
     return 0;
 }
 
+static int register_device(struct device_state *st)
+{
+    struct pciem_create_device create = {0};
+    struct pciem_bar_config bar0 = {
+        .bar_index = 0,
+        .size = PCIEM_BAR0_SIZE,
+        .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64,
+    };
+    struct pciem_bar_config bar2 = {
+        .bar_index = 2,
+        .size = PCIEM_BAR2_SIZE,
+        .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 |
+                 PCI_BASE_ADDRESS_MEM_PREFETCH,
+    };
+    struct pciem_config_space cfg = {
+        .vendor_id = PCIEM_PCI_VENDOR_ID,
+        .device_id = PCIEM_PCI_DEVICE_ID,
+        .class_code = {0x00, 0x00, 0x0b}
+    };
+    struct pciem_cap_config cap = {
+        .cap_type = PCIEM_CAP_MSI,
+        .msi = {
+            .has_64bit = 1,
+            .has_masking = 1,
+        },
+    };
+
+    st->pciem_fd = open("/dev/pciem", O_RDWR);
+    if (st->pciem_fd < 0) {
+        warn("open(/dev/pciem)");
+        return -1;
+    }
+
+    ioctl(st->pciem_fd, PCIEM_IOCTL_CREATE_DEVICE, &create);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar0);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar2);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_CAPABILITY, &cap);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_SET_CONFIG, &cfg);
+
+    st->instance_fd = ioctl(st->pciem_fd, PCIEM_IOCTL_REGISTER, 0);
+    if (st->instance_fd < 0) {
+        warn("PCIEM_IOCTL_REGISTER");
+        return -1;
+    }
+
+    return 0;
+}
+
 static void init_device(struct device_state *st)
 {
     st->pciem_fd = -1;
@@ -459,54 +508,16 @@ int main(void)
     }
 
     init_device(&dev_state);
+    if (register_device(&dev_state) < 0)
+        goto cleanup;
 
-    dev_state.pciem_fd = open("/dev/pciem", O_RDWR);
-    if (dev_state.pciem_fd < 0)
-    {
-        perror("Failed to open /dev/pciem");
-        return 1;
-    }
+    printf("[\x1b[32m*\x1b[0m] Device registered, got instance FD: %d\n",
+       dev_state.instance_fd);
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
-
-    struct pciem_create_device create;
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_CREATE_DEVICE, &create);
-
-    struct pciem_bar_config bar0 = {.bar_index = 0,
-                                    .size = PCIEM_BAR0_SIZE,
-                                    .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64};
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar0);
-
-    struct pciem_bar_config bar2 = {.bar_index = 2,
-                                    .size = PCIEM_BAR2_SIZE,
-                                    .flags = PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 |
-                                             PCI_BASE_ADDRESS_MEM_PREFETCH};
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar2);
-
-    struct pciem_cap_config msi = {
-        .cap_type = PCIEM_CAP_MSI,
-        .msi = {
-            .has_64bit = 1,
-            .has_masking = 1,
-        },
-    };
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_ADD_CAPABILITY, &msi);
-
-    struct pciem_config_space cfg = {
-        .vendor_id = PCIEM_PCI_VENDOR_ID, .device_id = PCIEM_PCI_DEVICE_ID, .class_code = {0x00, 0x00, 0x0b}};
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_SET_CONFIG, &cfg);
-
-    int ret_fd = ioctl(dev_state.pciem_fd, PCIEM_IOCTL_REGISTER, 0);
-    if (ret_fd < 0) {
-        perror("IOCTL_REGISTER failed");
-        goto cleanup;
-    }
-    dev_state.instance_fd = ret_fd;
-    printf("[\x1b[32m*\x1b[0m] Device registered, got instance FD: %d\n",
-       dev_state.instance_fd);
 
     dev_state.bar0_size = PCIEM_BAR0_SIZE;
     dev_state.bar0 = mmap(NULL, dev_state.bar0_size, PROT_READ | PROT_WRITE,
