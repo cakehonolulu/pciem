@@ -391,7 +391,7 @@ static int setup_eventfd(void)
 
 int main(void)
 {
-    int listen_sock;
+    int listen_sock = -1;
     struct sigaction sa;
 
     if (geteuid() != 0)
