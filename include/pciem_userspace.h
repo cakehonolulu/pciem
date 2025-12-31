@@ -217,6 +217,7 @@ struct pciem_userspace_state
 
     struct page *shared_ring_page;
     struct pciem_shared_ring *shared_ring;
+    spinlock_t shared_ring_lock;
 
     struct pciem_watchpoint_info watchpoints[MAX_WATCHPOINTS];
     spinlock_t watchpoint_lock;
