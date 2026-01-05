@@ -929,7 +929,6 @@ static const struct file_operations pciem_fops = {
     .unlocked_ioctl = pciem_ioctl,
     .compat_ioctl = pciem_ioctl,
     .mmap = pciem_mmap,
-    .llseek = no_llseek,
 };
 
 module_init(pciem_init);
