@@ -456,14 +456,14 @@ static int pciem_device_mmap(struct file *file, struct vm_area_struct *vma)
     unsigned long pfn;
     int ret;
 
-    if (!us->shared_ring_page)
+    if (!us->shared_ring)
     {
         ret = pciem_shared_ring_alloc(us);
         if (ret)
             return ret;
     }
 
-    pfn = page_to_pfn(us->shared_ring_page);
+    pfn = page_to_pfn(virt_to_page(us->shared_ring));
     ret = remap_pfn_range(vma, vma->vm_start, pfn, vma->vm_end - vma->vm_start, vma->vm_page_prot);
 
     if (ret == 0)

@@ -217,7 +217,6 @@ struct pciem_userspace_state
     bool config_locked;
     atomic_t event_pending;
 
-    struct page *shared_ring_page;
     struct pciem_shared_ring *shared_ring;
     spinlock_t shared_ring_lock;
 

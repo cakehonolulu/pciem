@@ -573,6 +573,7 @@ int main(void)
     }
 
     init_device(&dev_state);
+    atomic_store(&dev_state.running, 1);
     if (register_device(&dev_state) < 0)
         goto cleanup;
 
