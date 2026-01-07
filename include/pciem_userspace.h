@@ -161,6 +161,17 @@ struct pciem_eventfd_config
     uint32_t reserved;
 };
 
+struct pciem_irq_eventfd_config
+{
+    int32_t eventfd;
+    uint32_t vector;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+#define PCIEM_IRQ_EVENTFD_FLAG_LEVEL    (1 << 0)
+#define PCIEM_IRQ_EVENTFD_FLAG_DEASSERT (1 << 1)
+
 #define PCIEM_IOCTL_MAGIC 0xAF
 
 #define PCIEM_IOCTL_CREATE_DEVICE _IOWR(PCIEM_IOCTL_MAGIC, 10, struct pciem_create_device)
@@ -175,8 +186,10 @@ struct pciem_eventfd_config
 #define PCIEM_IOCTL_GET_BAR_INFO _IOWR(PCIEM_IOCTL_MAGIC, 19, struct pciem_bar_info_query)
 #define PCIEM_IOCTL_SET_WATCHPOINT _IOW(PCIEM_IOCTL_MAGIC, 20, struct pciem_watchpoint_config)
 #define PCIEM_IOCTL_SET_EVENTFD _IOW(PCIEM_IOCTL_MAGIC, 21, struct pciem_eventfd_config)
+#define PCIEM_IOCTL_SET_IRQ_EVENTFD _IOW(PCIEM_IOCTL_MAGIC, 22, struct pciem_irq_eventfd_config)
 
 #define PCIEM_RING_SIZE 256
+#define PCIEM_MAX_IRQ_EVENTFDS 32
 
 struct pciem_shared_ring
 {
@@ -200,6 +213,14 @@ struct pciem_watchpoint_info
     struct perf_event * __percpu * perf_bp;
 };
 
+struct pciem_irq_eventfd_entry
+{
+    struct eventfd_ctx *trigger;
+    uint32_t vector;
+    uint32_t flags;
+    bool active;
+};
+
 struct pciem_userspace_state
 {
     struct pciem_root_complex *rc;
@@ -220,6 +241,11 @@ struct pciem_userspace_state
 
     struct eventfd_ctx *eventfd;
     spinlock_t eventfd_lock;
+
+    struct pciem_irq_eventfd_entry irq_eventfds[PCIEM_MAX_IRQ_EVENTFDS];
+    spinlock_t irq_eventfd_lock;
+
+    struct task_struct *irq_poll_thread;
 
     bool bar_tracking_disabled;
 };

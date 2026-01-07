@@ -14,6 +14,8 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
 
 #include "pciem_capabilities.h"
 #include "pciem_dma.h"
@@ -134,6 +136,15 @@ struct pciem_userspace_state *pciem_userspace_create(void)
     us->eventfd = NULL;
     spin_lock_init(&us->eventfd_lock);
 
+    spin_lock_init(&us->irq_eventfd_lock);
+    for (i = 0; i < PCIEM_MAX_IRQ_EVENTFDS; i++)
+    {
+        us->irq_eventfds[i].active = false;
+        us->irq_eventfds[i].trigger = NULL;
+        us->irq_eventfds[i].vector = 0;
+        us->irq_eventfds[i].flags = 0;
+    }
+
     return us;
 }
 
@@ -146,6 +157,13 @@ void pciem_userspace_destroy(struct pciem_userspace_state *us)
     if (!us)
         return;
 
+    if (us->irq_poll_thread)
+    {
+        kthread_stop(us->irq_poll_thread);
+        us->irq_poll_thread = NULL;
+        pr_info("Stopped IRQ eventfd polling thread\n");
+    }
+
     for (i = 0; i < MAX_WATCHPOINTS; i++)
     {
         if (us->watchpoints[i].active && us->watchpoints[i].perf_bp)
@@ -156,10 +174,14 @@ void pciem_userspace_destroy(struct pciem_userspace_state *us)
         }
     }
 
-    if (us->eventfd)
+    for (i = 0; i < PCIEM_MAX_IRQ_EVENTFDS; i++)
     {
-        eventfd_ctx_put(us->eventfd);
-        us->eventfd = NULL;
+        if (us->irq_eventfds[i].active && us->irq_eventfds[i].trigger)
+        {
+            eventfd_ctx_put(us->irq_eventfds[i].trigger);
+            us->irq_eventfds[i].trigger = NULL;
+            us->irq_eventfds[i].active = false;
+        }
     }
 
     for (i = 0; i < ARRAY_SIZE(us->pending_requests); i++)
@@ -484,6 +506,53 @@ static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pcie
     return 0;
 }
 
+static int pciem_irq_eventfd_poll_thread(void *data)
+{
+    struct pciem_userspace_state *us = data;
+    unsigned long flags;
+    u64 count;
+    int i;
+
+    pr_info("IRQ eventfd polling thread started\n");
+
+    while (!kthread_should_stop())
+    {
+        bool found_work = false;
+
+        spin_lock_irqsave(&us->irq_eventfd_lock, flags);
+
+        for (i = 0; i < PCIEM_MAX_IRQ_EVENTFDS; i++)
+        {
+            if (!us->irq_eventfds[i].active)
+                continue;
+
+            eventfd_ctx_do_read(us->irq_eventfds[i].trigger, &count);
+
+            if (count > 0)
+            {
+                found_work = true;
+
+                if (us->rc)
+                {
+                    pr_debug("Injecting IRQ vector %u (count=%llu)\n",
+                            us->irq_eventfds[i].vector, count);
+                    pciem_trigger_msi(us->rc);
+                }
+            }
+        }
+
+        spin_unlock_irqrestore(&us->irq_eventfd_lock, flags);
+
+        if (!found_work)
+            msleep(1);
+        else
+            schedule();
+    }
+
+    pr_info("IRQ eventfd polling thread stopped\n");
+    return 0;
+}
+
 static long pciem_ioctl_register(struct pciem_userspace_state *us)
 {
     extern int pciem_complete_init(struct pciem_root_complex * v);
@@ -509,6 +578,19 @@ static long pciem_ioctl_register(struct pciem_userspace_state *us)
 
     us->config_locked = true;
     us->registered = true;
+
+    us->irq_poll_thread = kthread_run(pciem_irq_eventfd_poll_thread, us,
+                                      "pciem_irq_poll");
+    if (IS_ERR(us->irq_poll_thread))
+    {
+        pr_err("Failed to start IRQ polling thread: %ld\n",
+               PTR_ERR(us->irq_poll_thread));
+        us->irq_poll_thread = NULL;
+    }
+    else
+    {
+        pr_info("Started IRQ eventfd polling thread\n");
+    }
 
     fd = anon_inode_getfd("pciem_instance", &pciem_instance_fops, us, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
@@ -959,6 +1041,96 @@ static long pciem_ioctl_set_eventfd(struct pciem_userspace_state *us, struct pci
     return 0;
 }
 
+static long pciem_ioctl_set_irq_eventfd(struct pciem_userspace_state *us,
+                                        struct pciem_irq_eventfd_config __user *arg)
+{
+    struct pciem_irq_eventfd_config cfg;
+    struct eventfd_ctx *eventfd = NULL;
+    struct pciem_irq_eventfd_entry *entry = NULL;
+    struct eventfd_ctx *old_eventfd = NULL;
+    unsigned long flags;
+    int i;
+
+    if (!us->rc || !us->registered)
+        return -EINVAL;
+
+    if (copy_from_user(&cfg, arg, sizeof(cfg)))
+        return -EFAULT;
+
+    spin_lock_irqsave(&us->irq_eventfd_lock, flags);
+
+    for (i = 0; i < PCIEM_MAX_IRQ_EVENTFDS; i++)
+    {
+        if (us->irq_eventfds[i].active && us->irq_eventfds[i].vector == cfg.vector)
+        {
+            entry = &us->irq_eventfds[i];
+            break;
+        }
+        else if (!entry && !us->irq_eventfds[i].active)
+        {
+            entry = &us->irq_eventfds[i];
+        }
+    }
+
+    if (cfg.eventfd < 0)
+    {
+        if (!entry || !entry->active || entry->vector != cfg.vector)
+        {
+            spin_unlock_irqrestore(&us->irq_eventfd_lock, flags);
+            return -ENOENT;
+        }
+
+        old_eventfd = entry->trigger;
+        entry->active = false;
+        entry->trigger = NULL;
+        entry->vector = 0;
+        entry->flags = 0;
+
+        spin_unlock_irqrestore(&us->irq_eventfd_lock, flags);
+
+        if (old_eventfd)
+            eventfd_ctx_put(old_eventfd);
+
+        pr_info("Unregistered IRQ eventfd for vector %u\n", cfg.vector);
+        return 0;
+    }
+
+    if (!entry)
+    {
+        spin_unlock_irqrestore(&us->irq_eventfd_lock, flags);
+        pr_err("No free IRQ eventfd slots (max %d)\n", PCIEM_MAX_IRQ_EVENTFDS);
+        return -ENOSPC;
+    }
+
+    spin_unlock_irqrestore(&us->irq_eventfd_lock, flags);
+
+    eventfd = eventfd_ctx_fdget(cfg.eventfd);
+    if (IS_ERR(eventfd))
+    {
+        pr_err("Failed to get eventfd context for fd %d: %ld\n",
+               cfg.eventfd, PTR_ERR(eventfd));
+        return PTR_ERR(eventfd);
+    }
+
+    spin_lock_irqsave(&us->irq_eventfd_lock, flags);
+
+    old_eventfd = entry->trigger;
+
+    entry->trigger = eventfd;
+    entry->vector = cfg.vector;
+    entry->flags = cfg.flags;
+    entry->active = true;
+
+    spin_unlock_irqrestore(&us->irq_eventfd_lock, flags);
+
+    if (old_eventfd)
+        eventfd_ctx_put(old_eventfd);
+
+    pr_info("Registered IRQ eventfd %d for vector %u\n", cfg.eventfd, cfg.vector);
+
+    return 0;
+}
+
 static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct pciem_userspace_state *us = file->private_data;
@@ -1000,6 +1172,9 @@ static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned lon
 
     case PCIEM_IOCTL_SET_EVENTFD:
         return pciem_ioctl_set_eventfd(us, (struct pciem_eventfd_config __user *)arg);
+
+    case PCIEM_IOCTL_SET_IRQ_EVENTFD:
+        return pciem_ioctl_set_irq_eventfd(us, (struct pciem_irq_eventfd_config __user *)arg);
 
     default:
         return -ENOTTY;

@@ -57,6 +57,7 @@ struct device_state
     int instance_fd;
     int qemu_sock;
     int event_fd;
+    int irq_eventfd;
     atomic_t running;
     int qemu_connected;
     pthread_t qemu_thread;
@@ -159,32 +160,6 @@ static int writen(int fd, const void *buf, size_t n)
     return 0;
 }
 
-static int map_bars_via_fd(void)
-{
-    dev_state.bar0_size = PCIEM_BAR0_SIZE;
-    dev_state.bar0 = mmap(NULL, dev_state.bar0_size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED, dev_state.instance_fd, 0 * 4096);
-
-    if (dev_state.bar0 == MAP_FAILED)
-    {
-        perror("mmap BAR0 failed");
-        return -1;
-    }
-
-    dev_state.bar2_size = PCIEM_BAR2_SIZE;
-    dev_state.bar2 = mmap(NULL, dev_state.bar2_size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED, dev_state.instance_fd, 2 * 4096);
-
-    if (dev_state.bar2 == MAP_FAILED)
-    {
-        perror("mmap BAR2 failed");
-        return -1;
-    }
-
-    printf("[\x1b[32m*\x1b[0m] BARs mapped successfully via Instance FD\n");
-    return 0;
-}
-
 static int send_register_write_sync(uint32_t offset, uint32_t value)
 {
     struct qemu_msg msg;
@@ -237,11 +212,31 @@ static int forward_command_to_qemu(void)
     return 0;
 }
 
+static void inject_irq(uint32_t vector)
+{
+    if (dev_state.irq_eventfd >= 0)
+    {
+        uint64_t val = 1;
+        ssize_t ret = write(dev_state.irq_eventfd, &val, sizeof(val));
+        if (ret != sizeof(val))
+        {
+            struct pciem_irq_inject irq = {.vector = vector};
+            ioctl(dev_state.pciem_fd, PCIEM_IOCTL_INJECT_IRQ, &irq);
+        }
+    }
+    else
+    {
+        struct pciem_irq_inject irq = {.vector = vector};
+        ioctl(dev_state.pciem_fd, PCIEM_IOCTL_INJECT_IRQ, &irq);
+    }
+}
+
 static void *qemu_handler_thread(void *arg)
 {
     struct qemu_msg msg;
     struct qemu_resp resp;
     uint32_t header;
+    (void) arg;
 
     while (dev_running(&dev_state) && dev_state.qemu_connected)
     {
@@ -282,7 +277,13 @@ static void *qemu_handler_thread(void *arg)
                 }
 
                 pthread_mutex_lock(&dev_state.sock_lock);
-                write(dev_state.qemu_sock, &resp, sizeof(resp));
+                if (write(dev_state.qemu_sock, &resp, sizeof(resp)) != sizeof(resp))
+                {
+                    perror("Socket write failed");
+                    pthread_mutex_unlock(&dev_state.sock_lock);
+                    break;
+                }
+
                 if (resp.status == 0)
                 {
                     if (writen(dev_state.qemu_sock, dev_state.dma_bounce_buf, msg.len) < 0) {
@@ -303,8 +304,7 @@ static void *qemu_handler_thread(void *arg)
                 dev_state.bar0[REG_RESULT_HI / 4] = (uint32_t)(result >> 32);
                 dev_state.bar0[REG_CMD / 4] = 0;
 
-                struct pciem_irq_inject irq = {.vector = 0};
-                ioctl(dev_state.pciem_fd, PCIEM_IOCTL_INJECT_IRQ, &irq);
+                inject_irq(0);
             }
         }
         else
@@ -357,8 +357,7 @@ static void process_command_local(void)
     dev_state.bar0[REG_STATUS / 4] = status;
     dev_state.bar0[REG_CMD / 4] = 0;
 
-    struct pciem_irq_inject irq = {.vector = 0};
-    ioctl(dev_state.pciem_fd, PCIEM_IOCTL_INJECT_IRQ, &irq);
+    inject_irq(0);
 }
 
 static int setup_watchpoints(void)
@@ -397,6 +396,34 @@ static int setup_eventfd(void)
     }
 
     printf("[\x1b[32m*\x1b[0m] Eventfd configured: fd=%d\n", dev_state.event_fd);
+    return 0;
+}
+
+static int setup_irq_eventfd(void)
+{
+    struct pciem_irq_eventfd_config irq_cfg;
+
+    dev_state.irq_eventfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (dev_state.irq_eventfd < 0)
+    {
+        perror("Failed to create IRQ eventfd");
+        return -1;
+    }
+
+    irq_cfg.eventfd = dev_state.irq_eventfd;
+    irq_cfg.vector = 0;
+    irq_cfg.flags = 0;
+    irq_cfg.reserved = 0;
+
+    if (ioctl(dev_state.pciem_fd, PCIEM_IOCTL_SET_IRQ_EVENTFD, &irq_cfg) < 0)
+    {
+        perror("Failed to set IRQ eventfd");
+        close(dev_state.irq_eventfd);
+        dev_state.irq_eventfd = -1;
+        return -1;
+    }
+
+    printf("[\x1b[32m*\x1b[0m] IRQ eventfd configured: fd=%d\n", dev_state.irq_eventfd);
     return 0;
 }
 
@@ -531,12 +558,25 @@ static void init_device(struct device_state *st)
     st->qemu_sock = -1;
     st->dma_bounce_buf = NULL;
     st->event_fd = -1;
+    st->irq_eventfd = -1;
 }
 
 static void destroy_device(struct device_state *st)
 {
     if (st->event_fd >= 0)
         close(st->event_fd);
+
+    if (st->irq_eventfd >= 0)
+    {
+        struct pciem_irq_eventfd_config irq_cfg;
+        irq_cfg.eventfd = -1;
+        irq_cfg.vector = 0;
+        irq_cfg.flags = 0;
+        irq_cfg.reserved = 0;
+        ioctl(st->pciem_fd, PCIEM_IOCTL_SET_IRQ_EVENTFD, &irq_cfg);
+
+        close(st->irq_eventfd);
+    }
 
     if (st->dma_bounce_buf)
         free(st->dma_bounce_buf);
@@ -636,6 +676,11 @@ int main(void)
     if (setup_eventfd() < 0)
     {
         printf("[!] Failed to setup eventfd, falling back to busy polling\n");
+    }
+
+    if (setup_irq_eventfd() < 0)
+    {
+        printf("[!] Failed to setup IRQ eventfd, falling back to ioctl\n");
     }
 
     printf("[\x1b[32m*\x1b[0m] Starting event consumer...\n");
