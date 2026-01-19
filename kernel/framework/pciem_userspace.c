@@ -1102,6 +1102,142 @@ static long pciem_ioctl_set_irq_eventfd(struct pciem_userspace_state *us,
     return 0;
 }
 
+static long pciem_ioctl_dma_indirect(struct pciem_userspace_state *us, struct pciem_dma_indirect __user *arg)
+{
+    struct pciem_dma_indirect req;
+    void *data_buf = NULL;
+    uint64_t *list_buf = NULL;
+    uint64_t cur_prp_list;
+    uint32_t page_size;
+    uint32_t offset;
+    uint32_t chunk;
+    uint64_t user_ptr;
+    uint32_t remaining;
+    int list_idx = 0;
+    int ret = 0;
+
+    if (!us->rc || !us->registered)
+        return -EINVAL;
+
+    if (copy_from_user(&req, arg, sizeof(req)))
+        return -EFAULT;
+
+    if (req.length == 0)
+        return 0;
+
+    page_size = req.page_size;
+
+    if (page_size < 4096 || page_size > 65536 || (page_size & (page_size - 1)))
+        return -EINVAL;
+
+    remaining = req.length;
+    user_ptr = req.user_addr;
+
+    list_buf = kmalloc(page_size, GFP_KERNEL);
+    data_buf = kmalloc(page_size, GFP_KERNEL);
+
+    if (!list_buf || !data_buf) {
+        ret = -ENOMEM;
+        goto out;
+    }
+
+    offset = req.prp1 & (page_size - 1);
+    chunk = page_size - offset;
+    if (chunk > remaining) chunk = remaining;
+
+    if (req.flags & PCIEM_DMA_FLAG_WRITE) {
+        if (copy_from_user(data_buf, (void __user *)user_ptr, chunk)) {
+            ret = -EFAULT;
+            goto out;
+        }
+        ret = pciem_dma_write_to_guest(us->rc, req.prp1, data_buf, chunk, req.pasid);
+    } else {
+        ret = pciem_dma_read_from_guest(us->rc, req.prp1, data_buf, chunk, req.pasid);
+        if (ret == 0) {
+            if (copy_to_user((void __user *)user_ptr, data_buf, chunk))
+                ret = -EFAULT;
+        }
+    }
+
+    if (ret) goto out;
+
+    remaining -= chunk;
+    user_ptr += chunk;
+
+    if (remaining == 0) goto out;
+
+    if (remaining <= page_size) {
+        if (req.flags & PCIEM_DMA_FLAG_WRITE) {
+            if (copy_from_user(data_buf, (void __user *)user_ptr, remaining)) {
+                ret = -EFAULT;
+                goto out;
+            }
+            ret = pciem_dma_write_to_guest(us->rc, req.prp2, data_buf, remaining, req.pasid);
+        } else {
+            ret = pciem_dma_read_from_guest(us->rc, req.prp2, data_buf, remaining, req.pasid);
+            if (ret == 0 && copy_to_user((void __user *)user_ptr, data_buf, remaining)) {
+                ret = -EFAULT;
+            }
+        }
+        goto out;
+    }
+
+    cur_prp_list = req.prp2;
+    list_idx = 0;
+
+    uint32_t list_offset = cur_prp_list & (page_size - 1);
+    uint32_t list_bytes = page_size - list_offset;
+    
+    ret = pciem_dma_read_from_guest(us->rc, cur_prp_list, list_buf, list_bytes, req.pasid);
+    if (ret) goto out;
+
+    uint64_t *prps = (uint64_t *)list_buf;
+    uint32_t max_entries = list_bytes / 8;
+
+    while (remaining > 0) {
+        if (list_idx == max_entries - 1 && remaining > page_size) {
+            cur_prp_list = prps[list_idx];
+            
+            list_offset = cur_prp_list & (page_size - 1);
+            list_bytes = page_size - list_offset;
+            max_entries = list_bytes / 8;
+
+            ret = pciem_dma_read_from_guest(us->rc, cur_prp_list, list_buf, list_bytes, req.pasid);
+            if (ret) goto out;
+            
+            prps = (uint64_t *)list_buf;
+            list_idx = 0;
+            continue;
+        }
+
+        uint64_t data_phys = prps[list_idx++];
+        chunk = (remaining < page_size) ? remaining : page_size;
+
+        if (req.flags & PCIEM_DMA_FLAG_WRITE) {
+            if (copy_from_user(data_buf, (void __user *)user_ptr, chunk)) {
+                ret = -EFAULT;
+                goto out;
+            }
+            ret = pciem_dma_write_to_guest(us->rc, data_phys, data_buf, chunk, req.pasid);
+        } else {
+            ret = pciem_dma_read_from_guest(us->rc, data_phys, data_buf, chunk, req.pasid);
+            if (ret == 0 && copy_to_user((void __user *)user_ptr, data_buf, chunk)) {
+                ret = -EFAULT;
+            }
+        }
+
+        if (ret) goto out;
+
+        remaining -= chunk;
+        user_ptr += chunk;
+    }
+
+out:
+    kfree(list_buf);
+    kfree(data_buf);
+    return ret;
+}
+
 static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct pciem_userspace_state *us = file->private_data;
@@ -1146,6 +1282,9 @@ static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned lon
 
     case PCIEM_IOCTL_SET_IRQ_EVENTFD:
         return pciem_ioctl_set_irq_eventfd(us, (struct pciem_irq_eventfd_config __user *)arg);
+
+    case PCIEM_IOCTL_DMA_INDIRECT:
+        return pciem_ioctl_dma_indirect(us, (struct pciem_dma_indirect __user *)arg);
 
     default:
         return -ENOTTY;

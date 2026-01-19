@@ -174,6 +174,18 @@ struct pciem_irq_eventfd_config
 #define PCIEM_IRQ_EVENTFD_FLAG_LEVEL    (1 << 0)
 #define PCIEM_IRQ_EVENTFD_FLAG_DEASSERT (1 << 1)
 
+struct pciem_dma_indirect
+{
+    uint64_t prp1;
+    uint64_t prp2;
+    uint64_t user_addr;
+    uint32_t length;
+    uint32_t page_size;
+    uint32_t pasid;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
 #define PCIEM_IOCTL_MAGIC 0xAF
 
 #define PCIEM_IOCTL_CREATE_DEVICE _IOWR(PCIEM_IOCTL_MAGIC, 10, struct pciem_create_device)
@@ -189,6 +201,7 @@ struct pciem_irq_eventfd_config
 #define PCIEM_IOCTL_SET_WATCHPOINT _IOW(PCIEM_IOCTL_MAGIC, 20, struct pciem_watchpoint_config)
 #define PCIEM_IOCTL_SET_EVENTFD _IOW(PCIEM_IOCTL_MAGIC, 21, struct pciem_eventfd_config)
 #define PCIEM_IOCTL_SET_IRQ_EVENTFD _IOW(PCIEM_IOCTL_MAGIC, 22, struct pciem_irq_eventfd_config)
+#define PCIEM_IOCTL_DMA_INDIRECT _IOWR(PCIEM_IOCTL_MAGIC, 24, struct pciem_dma_indirect)
 
 #define PCIEM_RING_SIZE 256
 #define PCIEM_MAX_IRQ_EVENTFDS 32
