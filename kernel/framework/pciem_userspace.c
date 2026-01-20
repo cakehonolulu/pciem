@@ -961,7 +961,11 @@ static long pciem_ioctl_set_eventfd(struct pciem_userspace_state *us, struct pci
     struct eventfd_ctx *eventfd = NULL;
     struct eventfd_ctx *old_eventfd = NULL;
     unsigned long flags;
-    int fd;
+    int fd, ret;
+
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
