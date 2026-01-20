@@ -77,7 +77,7 @@ struct pciem_cap_entry
     } config;
 
     union {
-        struct
+        struct pciem_msi_state
         {
             u16 control;
             u32 address_lo;

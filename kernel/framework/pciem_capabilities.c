@@ -526,6 +526,67 @@ bool pciem_handle_cap_read(struct pciem_root_complex *v, int where, int size, u3
     return false;
 }
 
+static bool handle_msi_write(struct pciem_cap_entry *cap, u32 offset, u32 size, u32 value)
+{
+    struct pciem_msi_state *st = &cap->state.msi_state;
+
+    if (offset == 2 && size == 2) {
+        st->control = value & 0xffff;
+        pr_info("MSI Control written: 0x%04x (Enable: %d)\n", value, !!(value & PCI_MSI_FLAGS_ENABLE));
+        return true;
+    }
+
+    if (cap->config.msi.has_64bit)
+    {
+        if (offset == 4 && size == 4)
+        {
+            st->address_lo = value;
+            pr_info("MSI Address Lo written: 0x%08x\n", value);
+            return true;
+        }
+        else if (offset == 8 && size == 4)
+        {
+            st->address_hi = value;
+            pr_info("MSI Address Hi written: 0x%08x\n", value);
+            return true;
+        }
+        else if (offset == 12 && size == 2)
+        {
+            st->data = value & 0xFFFF;
+            pr_info("MSI Data written: 0x%04x\n", value);
+            return true;
+        }
+        else if (offset == 14 && size == 4)
+        {
+            st->mask_bits = value;
+            pr_info("MSI Mask bits written: 0x%08x\n", value);
+            return true;
+        }
+    }
+    else
+    {
+        if (offset == 4 && size == 4)
+        {
+            st->address_lo = value;
+            pr_info("MSI Address written: 0x%08x\n", value);
+            return true;
+        }
+        else if (offset == 8 && size == 2)
+        {
+            st->data = value & 0xFFFF;
+            pr_info("MSI Data written: 0x%04x\n", value);
+            return true;
+        }
+        else if (offset == 10 && size == 4)
+        {
+            st->mask_bits = value;
+            pr_info("MSI Mask bits written: 0x%08x\n", value);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool pciem_handle_cap_write(struct pciem_root_complex *v, int where, int size, u32 value)
 {
     struct pciem_cap_manager *mgr = v->cap_mgr;
@@ -544,67 +605,12 @@ bool pciem_handle_cap_write(struct pciem_root_complex *v, int where, int size, u
 
         if (where >= cap->offset && where < (cap->offset + cap->size))
         {
-            int cap_offset = where - cap->offset;
+            u32 cap_offset = where - cap->offset;
 
             switch (cap->type)
             {
             case PCIEM_CAP_MSI:
-                if (cap_offset == 2 && size == 2)
-                {
-                    cap->state.msi_state.control = value & 0xFFFF;
-                    pr_info("MSI Control written: 0x%04x (Enable: %d)\n", value, !!(value & PCI_MSI_FLAGS_ENABLE));
-                    return true;
-                }
-                if (cap->config.msi.has_64bit)
-                {
-                    if (cap_offset == 4 && size == 4)
-                    {
-                        cap->state.msi_state.address_lo = value;
-                        pr_info("MSI Address Lo written: 0x%08x\n", value);
-                        return true;
-                    }
-                    else if (cap_offset == 8 && size == 4)
-                    {
-                        cap->state.msi_state.address_hi = value;
-                        pr_info("MSI Address Hi written: 0x%08x\n", value);
-                        return true;
-                    }
-                    else if (cap_offset == 12 && size == 2)
-                    {
-                        cap->state.msi_state.data = value & 0xFFFF;
-                        pr_info("MSI Data written: 0x%04x\n", value);
-                        return true;
-                    }
-                    else if (cap_offset == 14 && size == 4)
-                    {
-                        cap->state.msi_state.mask_bits = value;
-                        pr_info("MSI Mask bits written: 0x%08x\n", value);
-                        return true;
-                    }
-                }
-                else
-                {
-                    if (cap_offset == 4 && size == 4)
-                    {
-                        cap->state.msi_state.address_lo = value;
-                        pr_info("MSI Address written: 0x%08x\n", value);
-                        return true;
-                    }
-                    else if (cap_offset == 8 && size == 2)
-                    {
-                        cap->state.msi_state.data = value & 0xFFFF;
-                        pr_info("MSI Data written: 0x%04x\n", value);
-                        return true;
-                    }
-                    else if (cap_offset == 10 && size == 4)
-                    {
-                        cap->state.msi_state.mask_bits = value;
-                        pr_info("MSI Mask bits written: 0x%08x\n", value);
-                        return true;
-                    }
-                }
-                break;
-
+                return handle_msi_write(cap, cap_offset, size, value);
             case PCIEM_CAP_MSIX:
                 if (cap_offset == 2 && size == 2)
                 {
