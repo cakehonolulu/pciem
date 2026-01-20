@@ -1026,6 +1026,19 @@ static void pciem_irqfd_shutdown(struct pciem_irq_eventfd_entry *entry)
     entry->trigger = NULL;
 }
 
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
+static struct file *fd_file(struct fd fd)
+{
+    return fd.file;
+}
+
+static bool fd_empty(struct fd fd)
+{
+    return unlikely(!fd.file);
+}
+#endif
+
 static long pciem_ioctl_set_irq_eventfd(struct pciem_userspace_state *us,
                                         struct pciem_irq_eventfd_config __user *arg)
 {
@@ -1077,7 +1090,7 @@ static long pciem_ioctl_set_irq_eventfd(struct pciem_userspace_state *us,
         return PTR_ERR(eventfd);
 
     f = fdget(cfg.eventfd);
-    if (!f.file) {
+    if (fd_empty(f)) {
         eventfd_ctx_put(eventfd);
         return -EBADF;
     }
@@ -1092,7 +1105,7 @@ static long pciem_ioctl_set_irq_eventfd(struct pciem_userspace_state *us,
     init_poll_funcptr(&pt_helper.pt, pciem_irqfd_ptable_queue_proc);
     pt_helper.entry = entry;
 
-    vfs_poll(f.file, &pt_helper.pt);
+    vfs_poll(fd_file(f), &pt_helper.pt);
 
     fdput(f);
 
