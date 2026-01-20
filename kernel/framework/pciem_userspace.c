@@ -288,6 +288,25 @@ int pciem_userspace_wait_response(struct pciem_userspace_state *us, uint64_t seq
     return ret;
 }
 
+static int pciem_check_unregistered(struct pciem_userspace_state *us)
+{
+    if (!us->rc)
+        return -EINVAL;
+
+    if (us->registered)
+        return -EBUSY;
+
+    return 0;
+}
+
+static int pciem_check_registered(struct pciem_userspace_state *us)
+{
+    if (!us->rc || !us->registered)
+        return -EINVAL;
+
+    return 0;
+}
+
 static int pciem_device_release(struct inode *inode, struct file *file)
 {
     struct pciem_userspace_state *us = file->private_data;
@@ -296,7 +315,7 @@ static int pciem_device_release(struct inode *inode, struct file *file)
 
     if (us)
     {
-        if (us->rc && us->registered)
+        if (!pciem_check_registered(us))
         {
             pr_info("Cleaning up registered device instance\n");
             pciem_free_root_complex(us->rc);
@@ -385,11 +404,9 @@ static long pciem_ioctl_add_bar(struct pciem_userspace_state *us, struct pciem_b
     struct pciem_bar_config cfg;
     int ret;
 
-    if (!us->rc)
-        return -EINVAL;
-
-    if (us->registered)
-        return -EBUSY;
+    ret = pciem_check_unregistered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
@@ -416,13 +433,11 @@ static long pciem_ioctl_add_bar(struct pciem_userspace_state *us, struct pciem_b
 static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct pciem_cap_config __user *arg)
 {
     struct pciem_cap_config cfg;
-    int ret = 0;
+    int ret;
 
-    if (!us->rc)
-        return -EINVAL;
-
-    if (us->registered)
-        return -EBUSY;
+    ret = pciem_check_unregistered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
@@ -468,12 +483,11 @@ static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pcie
 {
     struct pciem_config_space cfg;
     u8 *config;
+    int ret;
 
-    if (!us->rc)
-        return -EINVAL;
-
-    if (us->registered)
-        return -EBUSY;
+    ret = pciem_check_unregistered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
@@ -504,11 +518,9 @@ static long pciem_ioctl_register(struct pciem_userspace_state *us)
     int ret;
     int fd;
 
-    if (!us->rc)
-        return -EINVAL;
-
-    if (us->registered)
-        return -EBUSY;
+    ret = pciem_check_unregistered(us);
+    if (ret)
+        return ret;
 
     pr_info("Registering userspace-defined device on PCI bus\n");
 
@@ -538,9 +550,11 @@ static long pciem_ioctl_register(struct pciem_userspace_state *us)
 static long pciem_ioctl_inject_irq(struct pciem_userspace_state *us, struct pciem_irq_inject __user *arg)
 {
     struct pciem_irq_inject inject;
+    int ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&inject, arg, sizeof(inject)))
         return -EFAULT;
@@ -558,8 +572,9 @@ static long pciem_ioctl_dma(struct pciem_userspace_state *us, struct pciem_dma_o
     void *kernel_buf;
     int ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&op, arg, sizeof(op)))
         return -EFAULT;
@@ -597,10 +612,11 @@ static long pciem_ioctl_dma_atomic(struct pciem_userspace_state *us, struct pcie
 {
     struct pciem_dma_atomic atomic;
     u64 result;
-    int ret = 0;
+    int ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&atomic, arg, sizeof(atomic)))
         return -EFAULT;
@@ -646,8 +662,9 @@ static long pciem_ioctl_p2p(struct pciem_userspace_state *us, struct pciem_p2p_o
     void *kernel_buf;
     int ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&op, arg, sizeof(op)))
         return -EFAULT;
@@ -685,9 +702,11 @@ static long pciem_ioctl_get_bar_info(struct pciem_userspace_state *us, struct pc
 {
     struct pciem_bar_info_query query;
     struct pciem_bar_info *bar;
+    int ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&query, arg, sizeof(query)))
         return -EFAULT;
@@ -796,10 +815,11 @@ static long pciem_ioctl_set_watchpoint(struct pciem_userspace_state *us, struct 
     struct perf_event_attr attr;
     unsigned long flags;
     int wp_slot = -1;
-    int i;
+    int i, ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
@@ -1034,10 +1054,11 @@ static long pciem_ioctl_set_irq_eventfd(struct pciem_userspace_state *us,
     struct pciem_irq_eventfd_entry *entry = NULL;
     struct fd f;
     struct pciem_poll_helper pt_helper;
-    int i;
+    int i, ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
@@ -1112,10 +1133,11 @@ static long pciem_ioctl_dma_indirect(struct pciem_userspace_state *us, struct pc
     uint64_t user_ptr;
     uint32_t remaining;
     int list_idx = 0;
-    int ret = 0;
+    int ret;
 
-    if (!us->rc || !us->registered)
-        return -EINVAL;
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
 
     if (copy_from_user(&req, arg, sizeof(req)))
         return -EFAULT;
