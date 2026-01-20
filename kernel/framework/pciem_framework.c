@@ -867,6 +867,7 @@ struct pciem_root_complex *pciem_alloc_root_complex(void)
         return ERR_PTR(-ENOMEM);
 
     rwlock_init(&v->bars_lock);
+    rwlock_init(&v->cap_lock);
 
     /* Essential initialization that must happen */
     init_irq_work(&v->msi_irq_work, pciem_msi_irq_work_func);

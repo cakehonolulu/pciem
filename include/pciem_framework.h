@@ -80,6 +80,7 @@ struct pciem_root_complex
     struct platform_device *shared_bridge_pdev;
 
     struct pciem_cap_manager *cap_mgr;
+    rwlock_t cap_lock;
 
     resource_size_t total_carved_start;
     resource_size_t total_carved_end;

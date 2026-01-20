@@ -27,60 +27,66 @@ static u8 msi_cap_size(struct pciem_cap_msi_config *cfg)
 
 void pciem_init_cap_manager(struct pciem_root_complex *v)
 {
+    guard(write_lock)(&v->cap_lock);
+
+    if (v->cap_mgr)
+        return;
+
+    v->cap_mgr = kzalloc(sizeof(*v->cap_mgr), GFP_KERNEL);
     if (!v->cap_mgr)
     {
-        v->cap_mgr = kzalloc(sizeof(*v->cap_mgr), GFP_KERNEL);
-        if (!v->cap_mgr)
-        {
-            pr_err("Failed to allocate capability manager\n");
-            return;
-        }
-        v->cap_mgr->num_caps = 0;
-        v->cap_mgr->next_offset = 0x40;
+        pr_err("Failed to allocate capability manager\n");
+        return;
     }
+    v->cap_mgr->num_caps = 0;
+    v->cap_mgr->next_offset = 0x40;
 }
 
 void pciem_cleanup_cap_manager(struct pciem_root_complex *v)
 {
+    struct pciem_cap_manager *mgr;
     int i;
 
-    if (!v->cap_mgr)
-    {
+    guard(write_lock)(&v->cap_lock);
+
+    mgr = v->cap_mgr;
+    if (!mgr)
         return;
-    }
 
     for (i = 0; i < v->cap_mgr->num_caps; i++)
     {
-        if (v->cap_mgr->caps[i].type == PCIEM_CAP_VSEC && v->cap_mgr->caps[i].config.vsec.data)
+        if (mgr->caps[i].type == PCIEM_CAP_VSEC && mgr->caps[i].config.vsec.data)
         {
-            kfree(v->cap_mgr->caps[i].config.vsec.data);
+            kfree(mgr->caps[i].config.vsec.data);
         }
     }
 
-    kfree(v->cap_mgr);
+    kfree(mgr);
     v->cap_mgr = NULL;
 }
 
 int pciem_add_cap_msi(struct pciem_root_complex *v, struct pciem_cap_msi_config *cfg)
 {
+    struct pciem_cap_manager *mgr;
     struct pciem_cap_entry *cap;
 
-    if (!v->cap_mgr || v->cap_mgr->num_caps >= MAX_PCI_CAPS)
-    {
-        return -ENOMEM;
-    }
+    guard(write_lock)(&v->cap_lock);
 
-    cap = &v->cap_mgr->caps[v->cap_mgr->num_caps];
+    mgr = v->cap_mgr;
+    if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
+        return -ENOMEM;
+
+    cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_MSI;
-    cap->offset = v->cap_mgr->next_offset;
+    cap->offset = mgr->next_offset;
     cap->size = msi_cap_size(cfg);
     cap->config.msi = *cfg;
 
     memset(&cap->state.msi_state, 0, sizeof(cap->state.msi_state));
     cap->state.msi_state.control = 0;
 
-    v->cap_mgr->next_offset += cap->size;
-    v->cap_mgr->num_caps++;
+    mgr->next_offset += cap->size;
+    mgr->num_caps++;
 
     pr_info("Added MSI capability at offset 0x%02x (size %u)\n", cap->offset, cap->size);
 
@@ -90,23 +96,25 @@ EXPORT_SYMBOL(pciem_add_cap_msi);
 
 int pciem_add_cap_msix(struct pciem_root_complex *v, struct pciem_cap_msix_config *cfg)
 {
+    struct pciem_cap_manager *mgr;
     struct pciem_cap_entry *cap;
 
-    if (!v->cap_mgr || v->cap_mgr->num_caps >= MAX_PCI_CAPS)
-    {
-        return -ENOMEM;
-    }
+    guard(write_lock)(&v->cap_lock);
 
-    cap = &v->cap_mgr->caps[v->cap_mgr->num_caps];
+    mgr = v->cap_mgr;
+    if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
+        return -ENOMEM;
+
+    cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_MSIX;
-    cap->offset = v->cap_mgr->next_offset;
+    cap->offset = mgr->next_offset;
     cap->size = 12;
     cap->config.msix = *cfg;
 
     cap->state.msix_state.control = 0;
 
-    v->cap_mgr->next_offset += cap->size;
-    v->cap_mgr->num_caps++;
+    mgr->next_offset += cap->size;
+    mgr->num_caps++;
 
     pr_info("Added MSI-X capability at offset 0x%02x\n", cap->offset);
 
@@ -115,24 +123,26 @@ int pciem_add_cap_msix(struct pciem_root_complex *v, struct pciem_cap_msix_confi
 
 int pciem_add_cap_pm(struct pciem_root_complex *v, struct pciem_cap_pm_config *cfg)
 {
+    struct pciem_cap_manager *mgr;
     struct pciem_cap_entry *cap;
 
-    if (!v->cap_mgr || v->cap_mgr->num_caps >= MAX_PCI_CAPS)
-    {
-        return -ENOMEM;
-    }
+    guard(write_lock)(&v->cap_lock);
 
-    cap = &v->cap_mgr->caps[v->cap_mgr->num_caps];
+    mgr = v->cap_mgr;
+    if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
+        return -ENOMEM;
+
+    cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_PM;
-    cap->offset = v->cap_mgr->next_offset;
+    cap->offset = mgr->next_offset;
     cap->size = 8;
     cap->config.pm = *cfg;
 
     cap->state.pm_state.control = 0;
     cap->state.pm_state.status = 0;
 
-    v->cap_mgr->next_offset += cap->size;
-    v->cap_mgr->num_caps++;
+    mgr->next_offset += cap->size;
+    mgr->num_caps++;
 
     pr_info("Added Power Management capability at offset 0x%02x\n", cap->offset);
 
@@ -141,21 +151,23 @@ int pciem_add_cap_pm(struct pciem_root_complex *v, struct pciem_cap_pm_config *c
 
 int pciem_add_cap_pcie(struct pciem_root_complex *v, struct pciem_cap_pcie_config *cfg)
 {
+    struct pciem_cap_manager *mgr;
     struct pciem_cap_entry *cap;
 
-    if (!v->cap_mgr || v->cap_mgr->num_caps >= MAX_PCI_CAPS)
-    {
-        return -ENOMEM;
-    }
+    guard(write_lock)(&v->cap_lock);
 
-    cap = &v->cap_mgr->caps[v->cap_mgr->num_caps];
+    mgr = v->cap_mgr;
+    if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
+        return -ENOMEM;
+
+    cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_PCIE;
-    cap->offset = v->cap_mgr->next_offset;
+    cap->offset = mgr->next_offset;
     cap->size = 60;
     cap->config.pcie = *cfg;
 
-    v->cap_mgr->next_offset += cap->size;
-    v->cap_mgr->num_caps++;
+    mgr->next_offset += cap->size;
+    mgr->num_caps++;
 
     pr_info("Added PCIe capability at offset 0x%02x\n", cap->offset);
 
@@ -164,31 +176,31 @@ int pciem_add_cap_pcie(struct pciem_root_complex *v, struct pciem_cap_pcie_confi
 
 int pciem_add_cap_vsec(struct pciem_root_complex *v, struct pciem_cap_vsec_config *cfg)
 {
+    struct pciem_cap_manager *mgr;
     struct pciem_cap_entry *cap;
     u8 *data_copy;
 
-    if (!v->cap_mgr || v->cap_mgr->num_caps >= MAX_PCI_CAPS)
-    {
+    guard(write_lock)(&v->cap_lock);
+
+    mgr = v->cap_mgr;
+    if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
         return -ENOMEM;
-    }
 
     data_copy = kmalloc(cfg->vsec_length, GFP_KERNEL);
     if (!data_copy)
-    {
         return -ENOMEM;
-    }
 
     memcpy(data_copy, cfg->data, cfg->vsec_length);
 
-    cap = &v->cap_mgr->caps[v->cap_mgr->num_caps];
+    cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_VSEC;
-    cap->offset = v->cap_mgr->next_offset;
+    cap->offset = mgr->next_offset;
     cap->size = 8 + cfg->vsec_length;
     cap->config.vsec = *cfg;
     cap->config.vsec.data = data_copy;
 
-    v->cap_mgr->next_offset += cap->size;
-    v->cap_mgr->num_caps++;
+    mgr->next_offset += cap->size;
+    mgr->num_caps++;
 
     pr_info("Added VSEC capability at offset 0x%02x (vendor 0x%04x)\n", cap->offset, cfg->vendor_id);
 
@@ -197,24 +209,26 @@ int pciem_add_cap_vsec(struct pciem_root_complex *v, struct pciem_cap_vsec_confi
 
 int pciem_add_cap_pasid(struct pciem_root_complex *v, struct pciem_cap_pasid_config *cfg)
 {
+    struct pciem_cap_manager *mgr;
     struct pciem_cap_entry *cap;
 
-    if (!v->cap_mgr || v->cap_mgr->num_caps >= MAX_PCI_CAPS)
-    {
-        return -ENOMEM;
-    }
+    guard(write_lock)(&v->cap_lock);
 
-    cap = &v->cap_mgr->caps[v->cap_mgr->num_caps];
+    mgr = v->cap_mgr;
+    if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
+        return -ENOMEM;
+
+    cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_PASID;
-    cap->offset = v->cap_mgr->next_offset;
+    cap->offset = mgr->next_offset;
     cap->size = 8;
     cap->config.pasid = *cfg;
 
     cap->state.pasid_state.control = 0;
     cap->state.pasid_state.pasid = 0;
 
-    v->cap_mgr->next_offset += cap->size;
-    v->cap_mgr->num_caps++;
+    mgr->next_offset += cap->size;
+    mgr->num_caps++;
 
     pr_info("Added PASID capability at offset 0x%02x\n", cap->offset);
 
@@ -418,10 +432,10 @@ bool pciem_handle_cap_read(struct pciem_root_complex *v, int where, int size, u3
     struct pciem_cap_manager *mgr = v->cap_mgr;
     int i;
 
+    guard(read_lock)(&v->cap_lock);
+
     if (!mgr)
-    {
         return false;
-    }
 
     for (i = 0; i < mgr->num_caps; i++)
     {
@@ -512,10 +526,12 @@ bool pciem_handle_cap_write(struct pciem_root_complex *v, int where, int size, u
     struct pciem_cap_manager *mgr = v->cap_mgr;
     int i;
 
+    /* Take a read lock since we are not updating anything in the cap. manager itself,
+     * only the actual capabilities. */
+    guard(read_lock)(&v->cap_lock);
+
     if (!mgr)
-    {
         return false;
-    }
 
     for (i = 0; i < mgr->num_caps; i++)
     {
