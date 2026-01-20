@@ -436,24 +436,25 @@ static bool handle_msi_read(struct pciem_cap_entry *cap, u32 offset, u32 size, u
 {
     struct pciem_msi_state *st = &cap->state.msi_state;
 
-    if (offset == 2 && size == 2)
+    if (offset == PCI_MSI_FLAGS && size == 2)
     {
         *value = st->control;
         return true;
     }
+    if (offset == PCI_MSI_ADDRESS_LO)
+    {
+        *value = st->address_lo;
+        return true;
+    }
+
     if (cap->config.msi.has_64bit)
     {
-        if (offset == 4)
-        {
-            *value = st->address_lo;
-            return true;
-        }
-        else if (offset == 8)
+        if (offset == PCI_MSI_ADDRESS_HI)
         {
             *value = st->address_hi;
             return true;
         }
-        else if (offset == 12)
+        else if (offset == PCI_MSI_DATA_64)
         {
             *value = st->data;
             return true;
@@ -461,12 +462,7 @@ static bool handle_msi_read(struct pciem_cap_entry *cap, u32 offset, u32 size, u
     }
     else
     {
-        if (offset == 4)
-        {
-            *value = st->address_lo;
-            return true;
-        }
-        else if (offset == 8)
+        if (offset == PCI_MSI_DATA_32)
         {
             *value = st->data;
             return true;
@@ -556,33 +552,32 @@ static bool handle_msi_write(struct pciem_cap_entry *cap, u32 offset, u32 size, 
 {
     struct pciem_msi_state *st = &cap->state.msi_state;
 
-    if (offset == 2 && size == 2) {
+    if (offset == PCI_MSI_FLAGS && size == 2) {
         st->control = value & 0xffff;
         pr_info("MSI Control written: 0x%04x (Enable: %d)\n", value, !!(value & PCI_MSI_FLAGS_ENABLE));
         return true;
     }
-
+    if (offset == PCI_MSI_ADDRESS_LO && size == 4)
+    {
+        st->address_lo = value;
+        pr_info("MSI Address Lo written: 0x%08x\n", value);
+        return true;
+    }
     if (cap->config.msi.has_64bit)
     {
-        if (offset == 4 && size == 4)
-        {
-            st->address_lo = value;
-            pr_info("MSI Address Lo written: 0x%08x\n", value);
-            return true;
-        }
-        else if (offset == 8 && size == 4)
+        if (offset == PCI_MSI_ADDRESS_HI && size == 4)
         {
             st->address_hi = value;
             pr_info("MSI Address Hi written: 0x%08x\n", value);
             return true;
         }
-        else if (offset == 12 && size == 2)
+        else if (offset == PCI_MSI_DATA_64 && size == 2)
         {
             st->data = value & 0xFFFF;
             pr_info("MSI Data written: 0x%04x\n", value);
             return true;
         }
-        else if (offset == 14 && size == 4)
+        else if (offset == PCI_MSI_MASK_64 && size == 4)
         {
             st->mask_bits = value;
             pr_info("MSI Mask bits written: 0x%08x\n", value);
@@ -591,19 +586,13 @@ static bool handle_msi_write(struct pciem_cap_entry *cap, u32 offset, u32 size, 
     }
     else
     {
-        if (offset == 4 && size == 4)
-        {
-            st->address_lo = value;
-            pr_info("MSI Address written: 0x%08x\n", value);
-            return true;
-        }
-        else if (offset == 8 && size == 2)
+        if (offset == PCI_MSI_DATA_32 && size == 2)
         {
             st->data = value & 0xFFFF;
             pr_info("MSI Data written: 0x%04x\n", value);
             return true;
         }
-        else if (offset == 10 && size == 4)
+        else if (offset == PCI_MSI_MASK_32 && size == 4)
         {
             st->mask_bits = value;
             pr_info("MSI Mask bits written: 0x%08x\n", value);
