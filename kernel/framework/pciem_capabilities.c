@@ -500,7 +500,7 @@ static bool handle_pasid_read(struct pciem_cap_entry *cap, u32 offset, u32 size,
 {
     struct pciem_pasid_state *st = &cap->state.pasid_state;
 
-    if (offset == 4 && size == 2)
+    if (offset == PCI_PASID_CTRL && size == 2)
     {
         *value = st->control;
         return true;
@@ -634,10 +634,10 @@ static bool handle_pasid_write(struct pciem_cap_entry *cap, u32 offset, u32 size
 {
     struct pciem_pasid_state *st = &cap->state.pasid_state;
 
-    if (offset == 4 && size == 2)
+    if (offset == PCI_PASID_CTRL && size == 2)
     {
-        st->control = value & 0x07;
-        if (value & 0x01)
+        st->control = value & (PCI_PASID_CTRL_ENABLE | PCI_PASID_CTRL_EXEC | PCI_PASID_CTRL_PRIV);
+        if (value & PCI_PASID_CTRL_ENABLE)
         {
             pr_info("PASID Enabled\n");
         }
