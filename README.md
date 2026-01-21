@@ -85,12 +85,18 @@ graph LR
 
 ## NVME Controller with 1GB disk
 
+The following example basically shows an NVME controller with 1GB of storage attached to. User can freely format, mount, create and remove files from the memory.
+
 https://github.com/user-attachments/assets/6cc9ef8b-72f9-4a0b-b54e-6fbdde7c7589
 
 ## ProtoPCIem card
 
-The card is programmed entirely in QEMU, who does all the userspace initialization and command handling from the real driver running in the host. Can run software-rendered DOOM (Submits finished frames with DMA to the card which QEMU displays) and also simple OpenGL 1.X games (On the screenshots, tyr-glquake and xash3d; thanks to a custom OpenGL state machine implemented entirely in QEMU that software-renders the command lists and updates the internal state accordingly).
+The card is programmed entirely in QEMU (State machine for the card, basically), which does all the userspace initialization and command handling from the real driver running in the host.
 
+Can run software-rendered DOOM (Submits finished frames with DMA to the card which QEMU displays) and also simple OpenGL 1.X games (On the screenshots, tyr-glquake and xash3d; thanks to a custom OpenGL state machine implemented entirely in QEMU that software-renders the command lists and updates the internal state accordingly).
+
+<details>
+  <summary>Screenshots</summary>
 <p align="center">
   <img width="1903" height="1029" alt="imagen" src="https://github.com/user-attachments/assets/16f64475-ee51-4f79-ae17-b06363f0b12a" />
 </p>
@@ -102,6 +108,8 @@ The card is programmed entirely in QEMU, who does all the userspace initializati
 <p align="center">
   <img width="1227" height="846" alt="imagen" src="https://github.com/user-attachments/assets/d21a7d84-f857-4790-bdc6-7bf2714e9eda" />
 </p>
+
+</details>
 
 ## License
 
