@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  A Linux kernel framework for synthetic PCIe device emulation entirely in userspace.
+  A Linux kernel framework enabling synthetic userspace PCIe device emulation.
 </div>
 
 <div align="center">
@@ -22,7 +22,7 @@ To brief what PCIem is: a framework for (Albeit not limited to) developing and t
 
 ## Comparison with libfvio-user
 
-`PCIem` and `libfvio-user` are two different solutions for different needs, there may be confusion when comparing both so herein the differences See [figure 1](#figure1).
+`PCIem` and `libfvio-user` are two different solutions for different needs, there may be confusion when comparing both so herein the differences (See [figure 1](#figure1) for more).
 
 The main one is that `libvfio-user` usually relies on a client (That implements the `vfio-user` protocol), usually QEMU (Through KVM, using VM exits) to expose the emulated PCIe device to the guest. You write your `vfio` server (With a callback mechanism usually) which then interacts with the client.
 
@@ -73,13 +73,13 @@ graph LR
 
 ## Current Features
 
-- **BAR Support**: Register and manage BARs programmatically
-- **Watchpoints**: Event-driven architecture using CPU watchpoints for access detection
-- **Legacy IRQ/MSI/MSI-X Support**: Full interrupt support with dynamic triggering
-- **PCI Capability Framework**: Modular PCI capabilities system (Linked-list underneath)
-- **DMA System**: IOMMU-aware DMA operations with atomic memory operations support
-- **P2P DMA**: Peer-to-peer DMA between devices with whitelist-based access control
-- **Userspace-defined**: Implement your PCIe prototypes anywhere
+- **BAR creation**: Programmatically create and monitor BAR regions.
+- **Watchpoints**: Access detection using CPU watchpoints to avoid polling for accesses.
+- **Interrupts support**: Legacy/MSI/MSI-X interrupt injection.
+- **PCI capability framework**: PCI capabilities system (Linked-list underneath).
+- **DMA system**: IOMMU-aware DMA accesses from/to userspace device.
+  - **P2P support (Preliminar!)**: Peer-to-peer DMA between devices with whitelist-based access control.
+- **Userspace**: Implement your PCIe devices _entirely_ in userspace.
 
 # Examples
 
@@ -101,12 +101,13 @@ The card is programmed entirely in QEMU, who does all the userspace initializati
 
 ## License
 
-Dual MIT/GPLv2 (pciem_framework.c and protopciem_driver.c)
+Dual MIT/GPLv2 (`pciem_framework.c` and `protopciem_driver.c` due to using GPL symbols).
 
-MIT (Rest)
+MIT (Rest).
 
 ## References
 
 - Blog post: https://cakehonolulu.github.io/introducing-pciem/
 - Documentation: https://cakehonolulu.github.io/docs/pciem/
+- Hackernews post: https://news.ycombinator.com/item?id=46689065
 - PCI Express specification: https://pcisig.com/specifications
