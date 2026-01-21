@@ -12,6 +12,7 @@
   https://cakehonolulu.github.io/docs/pciem/
 </div>
 
+[![CI](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml)
 
 ## What is PCIem?
 
