@@ -18,44 +18,57 @@
 
 PCIem is a framework that creates virtual PCIe devices in the Linux kernel by leveraging a few novel techniques to populate synthetic cards as legitimate PCI devices to the host OS.
 
-To brief what PCIem is: a framework for developing and testing PCIe device drivers without requiring actual hardware.
+To brief what PCIem is: a framework for (Albeit not limited to) developing and testing PCIe device drivers without requiring actual hardware on the host.
+
+## Comparison with libfvio-user
+
+`PCIem` and `libfvio-user` are two different solutions for different needs, there may be confusion when comparing both so herein the differences See [figure 1](#figure1).
+
+The main one is that `libvfio-user` usually relies on a client (That implements the `vfio-user` protocol), usually QEMU (Through KVM, using VM exits) to expose the emulated PCIe device to the guest. You write your `vfio` server (With a callback mechanism usually) which then interacts with the client.
+
+What `PCIem` does instead is, expose the device *directly* on the host; no KVM, no guests, no virtual machines, nothing. The device appears on the host's PCIe bus as if it was physically connected.
+
+<div align="center" id="figure1">
+
+| Feature | PCIem | libfvio-user |
+| :--- | :--- | :--- |
+| **Connection** | Device file (`/dev/pciem`) | UNIX Sockets (`vfio-user` protocol) |
+| **Target driver runs on** | Host | Guest OS |
+| **Emulated device runs on** | Userspace | Userspace |
+| **Device accesses** | Direct (Within host) | Virtualized (Guest to Host) |
+
+_Figure 1: Comparison between frameworks_
+
+</div>
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────┐                                   ┌──────────────────────────────────────────────────┐
-│                                          │                                   │                                                  │
-│ ┌─────────►Host Linux Kernel             │                                   │                  Linux Userspace                 │
-│ │                                        │                                   │                                                  │
-│ │                                        │                                   │                                                  │
-│ │    ┌────────────────────────────┐      │                                   │    ┌────────────────────────────────────────┐    │
-│ │    │      PCIem Framework       ◄──────┼────────────►/dev/pciem◄───────────┼────►          Userspace PCI shim            │    │
-│ │    │                            │      │                                   │    │                                        │    │
-│ │    │ - PCI Config Space         │      │                                   │    │ - Emulates PCIe device logic           │    │
-│ │    │                            │      │                                   │    │                                        │    │
-│ │    │ - BAR Mappings             │      │                                   │    └────────────────────────────────────────┘    │
-│ │    │                            │      │                                   │                                                  │
-│ │◄───┤ - INT/MSI/MSI-X Interrupts │      │                                   │                                                  │
-│ │    │                            │      │                                   └──────────────────────────────────────────────────┘
-│ │    │ - DMA (With/without IOMMU) │      │                                                         Userspace                     
-│ │    │                            │      │                                                                                       
-│ │    │ - P2P DMA                  │      │                                                                                       
-│ │    │                            │      │                                                                                       
-│ │    └────────────────────────────┘      │                                                                                       
-│ │                                        │                                                                                       
-│ │                                        │                                                                                       
-│ │    PCIe driver is unaware of PCIem     │                                                                                       
-│ │                                        │                                                                                       
-│ │                                        │                                                                                       
-│ │ ┌──────────────────────────────────┐   │                                                                                       
-│ │ │          Real PCIe Driver        │   │                                                                                       
-│ │ │                                  │   │                                                                                       
-│ └─┤ - Untouched logic from production│   │                                                                                       
-│   │                                  │   │                                                                                       
-│   └──────────────────────────────────┘   │                                                                                       
-│                                          │                                                                                       
-└──────────────────────────────────────────┘                                                                                       
-               Kernel Space                                                                                                        
+```mermaid
+graph LR
+    subgraph Kernel ["Host Linux Kernel"]
+        direction TB
+
+        RealDriver["Real PCIe Driver"]
+
+        subgraph Framework ["PCIem Framework"]
+            direction TB
+            Config["PCI Config Space"]
+            BARs["BARs"]
+            IRQ["Interrupts"]
+            DMA["DMA / IOMMU"]
+        end
+
+    end
+
+    Interface(("/dev/pciem"))
+
+    subgraph User ["Linux Userspace"]
+        direction TB
+        Shim["Device Emulation"]
+    end
+
+    Framework <==> Interface
+    Interface <==> Shim
 ```
 
 ## Current Features
