@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ubuntu:
+    name: Build (Ubuntu latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            flex \
+            bison \
+            libelf-dev \
+            linux-headers-generic
+
+      - name: Build
+        run: |
+          KDIR=$(ls -d /lib/modules/*/build | head -n1)
+          make -j $(nproc) KDIR=$KDIR
+
+  ubuntu-lts:
+    name: Build (Ubuntu LTS)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            flex \
+            bison \
+            libelf-dev \
+            linux-headers-generic
+
+      - name: Build
+        run: |
+          KDIR=$(ls -d /lib/modules/*/build | head -n1)
+          make -j $(nproc) KDIR=$KDIR
+
+  debian:
+    name: Build (Debian stable)
+    runs-on: ubuntu-latest
+    container:
+      image: debian:stable-slim
+
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            flex \
+            git \
+            libelf-dev \
+            linux-headers-amd64 \
+            tar
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          KDIR=$(ls -d /usr/src/linux-headers-* | head -n1)
+          make -j $(nproc) KDIR=$KDIR

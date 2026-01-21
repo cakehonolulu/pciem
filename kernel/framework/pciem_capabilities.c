@@ -4,7 +4,12 @@
 #include "pciem_framework.h"
 #include <linux/pci_regs.h>
 #include <linux/slab.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+#include <asm/unaligned.h>
+#else
 #include <linux/unaligned.h>
+#endif
 
 static u8 msi_cap_size(struct pciem_cap_msi_config *cfg)
 {
