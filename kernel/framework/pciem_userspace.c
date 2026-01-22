@@ -1079,11 +1079,8 @@ static void pciem_irqfd_work(struct work_struct *work)
 {
     struct pciem_irqfd *irqfd = container_of(work, struct pciem_irqfd, inject_work);
     struct pciem_userspace_state *us = irqfd->us;
-    u64 count;
 
-    eventfd_ctx_do_read(irqfd->trigger, &count);
-
-    if (count > 0 && us && us->rc) {
+    if (us && us->rc) {
         pciem_trigger_msi(us->rc, irqfd->vector);
     }
 }
@@ -1093,8 +1090,10 @@ static int pciem_irqfd_wakeup(wait_queue_entry_t *wait, unsigned mode, int sync,
     struct pciem_irqfd *irqfd = container_of(wait, struct pciem_irqfd, wait);
     struct pciem_irqfds *irqfds = &irqfd->us->irqfds;
     __poll_t flags = key_to_poll(key);
+    u64 count;
 
     if (flags & EPOLLIN) {
+        eventfd_ctx_do_read(irqfd->trigger, &count);
         schedule_work(&irqfd->inject_work);
     }
 
