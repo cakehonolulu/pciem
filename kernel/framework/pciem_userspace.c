@@ -1101,16 +1101,17 @@ static void pciem_irqfd_ptable_queue_proc(struct file *file, wait_queue_head_t *
     struct pciem_poll_helper *helper = container_of(pt, struct pciem_poll_helper, pt);
     struct pciem_irqfd *irqfd = helper->irqfd;
 
-    irqfd->wqh = wqh;
     add_wait_queue(wqh, &irqfd->wait);
 }
 
 static void pciem_irqfd_shutdown(struct pciem_irqfd *irqfd)
 {
+    u64 cnt;
+
     if (!irqfd->active)
         return;
 
-    remove_wait_queue(irqfd->wqh, &irqfd->wait);
+    eventfd_ctx_remove_wait_queue(irqfd->trigger, &irqfd->wait, &cnt);
     irqfd->active = false;
 
     flush_work(&irqfd->inject_work);

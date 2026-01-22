@@ -231,7 +231,6 @@ struct pciem_watchpoint_info
 struct pciem_irqfd
 {
     struct eventfd_ctx *trigger;
-    wait_queue_head_t *wqh;
     wait_queue_entry_t wait;
     struct work_struct inject_work;
     struct pciem_userspace_state *us;
