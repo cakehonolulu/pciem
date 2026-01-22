@@ -106,4 +106,5 @@ jobs:
       - name: Build
         run: |
           KDIR=$(ls -d /usr/src/linux-obj/*/* | head -n1)
-          make -j $(nproc) KDIR=$KDIR
+          make clean
+          make all -j $(nproc) KDIR=$KDIR
