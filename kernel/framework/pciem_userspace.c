@@ -1133,6 +1133,7 @@ static long pciem_ioctl_set_irqfd(struct pciem_userspace_state *us,
     struct pciem_irqfd *irqfd = NULL;
     struct fd f = EMPTY_FD;
     struct pciem_poll_helper pt_helper;
+    __poll_t events;
     int ret;
 
     ret = pciem_check_registered(us);
@@ -1169,7 +1170,9 @@ static long pciem_ioctl_set_irqfd(struct pciem_userspace_state *us,
     init_poll_funcptr(&pt_helper.pt, pciem_irqfd_ptable_queue_proc);
     pt_helper.irqfd = irqfd;
 
-    vfs_poll(fd_file(f), &pt_helper.pt);
+    events = vfs_poll(fd_file(f), &pt_helper.pt);
+    if (events & EPOLLIN)
+        schedule_work(&irqfd->inject_work);
 
     fdput(f);
 
