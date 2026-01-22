@@ -9,10 +9,7 @@ pciem-objs := framework/pciem_framework.o \
 			  framework/pciem_bar.o \
 			  framework/pciem_userspace.o
 
-protopciem-driver-objs := driver/protopciem_driver.c
-
 obj-m += pciem.o
-obj-m += driver/protopciem_driver.o
 
 ccflags-y += -Wall
 

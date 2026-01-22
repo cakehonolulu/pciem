@@ -2,16 +2,26 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 GCC ?= gcc
 PWD := $(shell pwd)
 
-all: modules protopciem_card
+THIS_MAKEFILE     := $(lastword $(MAKEFILE_LIST))
+TOP_DIR           := $(abspath $(dir $(THIS_MAKEFILE)))
+EXAMPLES_DIR      := $(TOP_DIR)/examples
+EXAMPLE_MAKEFILES := $(wildcard $(EXAMPLES_DIR)/*/Makefile)
+EXAMPLES          := $(notdir $(patsubst %/Makefile,%,$(EXAMPLE_MAKEFILES)))
+
+all: modules examples
 
 modules:
 	$(MAKE) -C $(KDIR) M=$(PWD)/kernel modules
 
-protopciem_card:
-	$(GCC) -Wall -Wextra -O2 -pthread -Iinclude -o userspace/protopciem_card userspace/protopciem_card.c
+examples: $(EXAMPLES)
+
+$(EXAMPLES):
+	$(MAKE) -C $(EXAMPLES_DIR)/$@
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD)/kernel clean
-	rm -f userspace/protopciem_card
+	for e in $(EXAMPLES); do \
+		$(MAKE) -C $(EXAMPLES_DIR)/$$e clean; \
+	done
 
-.PHONY: all modules clean
+.PHONY: all modules examples clean $(EXAMPLES)
