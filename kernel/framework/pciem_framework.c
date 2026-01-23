@@ -363,41 +363,31 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, i
         size == 4)
     {
         int idx = (where - PCI_BASE_ADDRESS_0) / 4;
-        resource_size_t bsize = v->bars[idx].size;
+        const struct pciem_bar_info *bar = &v->bars[idx];
+        const struct pciem_bar_info *prev = idx > 0 && (idx % 2) == 1
+            ? &v->bars[idx - 1]
+            : NULL;
 
-        if (bsize != 0)
+        if (bar->size != 0)
         {
-            u32 probe_val = (u32)(~(bsize - 1));
-            u32 flags = v->bars[idx].flags;
+            u32 probe_val = (u32)(~(bar->size - 1));
 
-            if (v->bars[idx].base_addr_val == probe_val)
-            {
-                val = probe_val | (flags & ~PCI_BASE_ADDRESS_MEM_MASK);
-            }
+            if (bar->base_addr_val == probe_val)
+                val = probe_val | (bar->flags & ~PCI_BASE_ADDRESS_MEM_MASK);
             else
-            {
-                val = v->bars[idx].base_addr_val | (flags & ~PCI_BASE_ADDRESS_MEM_MASK);
-            }
+                val = bar->base_addr_val | (bar->flags & ~PCI_BASE_ADDRESS_MEM_MASK);
         }
-
-        else if (idx > 0 && (idx % 2 == 1) && (v->bars[idx - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
+        else if (prev && (prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
         {
-            resource_size_t bsize_prev = v->bars[idx - 1].size;
             u32 probe_val_high = 0xffffffff;
 
-            if (bsize_prev >= (1ULL << 32))
-            {
-                probe_val_high = (u32)(~(bsize_prev - 1) >> 32);
-            }
+            if (prev->size >= (1ULL << 32))
+                probe_val_high = (u32)(~(prev->size - 1) >> 32);
 
-            if (v->bars[idx].base_addr_val == probe_val_high)
-            {
+            if (bar->base_addr_val == probe_val_high)
                 val = probe_val_high;
-            }
             else
-            {
-                val = v->bars[idx].base_addr_val;
-            }
+                val = bar->base_addr_val;
         }
         else
         {
