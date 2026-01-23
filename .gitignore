@@ -54,5 +54,3 @@ dkms.conf
 
 # debug information files
 *.dwo
-
-userspace/protopciem_card
