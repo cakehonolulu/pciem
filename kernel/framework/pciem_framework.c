@@ -430,6 +430,41 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, i
     return PCIBIOS_SUCCESSFUL;
 }
 
+static int vph_write_bar_address(struct pciem_root_complex *v, u32 idx, u32 value)
+{
+    struct pciem_bar_info *bar = &v->bars[idx];
+    struct pciem_bar_info *prev = idx > 0 && (idx % 2) == 1
+        ? &v->bars[idx - 1]
+        : NULL;
+
+    if (bar->size != 0)
+    {
+        u32 mask = (u32)(~(bar->size - 1));
+        if (bar->flags & PCI_BASE_ADDRESS_SPACE_IO)
+            mask &= ~PCI_BASE_ADDRESS_IO_MASK;
+        else
+            mask &= ~PCI_BASE_ADDRESS_MEM_MASK;
+
+        bar->base_addr_val = value & mask;
+        return PCIBIOS_SUCCESSFUL;
+    }
+
+    if (prev && (prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
+    {
+        u32 mask_high = 0xffffffff;
+
+        if (prev->size < (1ULL << 32))
+            mask_high = 0;
+        else
+            mask_high = (u32)(~(prev->size - 1) >> 32);
+
+        bar->base_addr_val = value & mask_high;
+        return PCIBIOS_SUCCESSFUL;
+    }
+
+    return PCIBIOS_FUNC_NOT_SUPPORTED;
+}
+
 static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
 {
     struct pciem_root_complex *v;
@@ -463,43 +498,12 @@ static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, 
         size == 4)
     {
         int idx = (where - PCI_BASE_ADDRESS_0) / 4;
-        struct pciem_bar_info *bar = &v->bars[idx];
-        struct pciem_bar_info *prev = idx > 0 && (idx % 2) == 1
-            ? &v->bars[idx - 1]
-            : NULL;
-
-        if (bar->size != 0)
-        {
-            u32 mask = (u32)(~(bar->size - 1));
-            if (bar->flags & PCI_BASE_ADDRESS_SPACE_IO)
-            {
-                mask &= ~PCI_BASE_ADDRESS_IO_MASK;
-            }
-            else
-            {
-                mask &= ~PCI_BASE_ADDRESS_MEM_MASK;
-            }
-
-            bar->base_addr_val = value & mask;
-            return PCIBIOS_SUCCESSFUL;
-        }
-        else if (prev && (prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
-        {
-            u32 mask_high = 0xffffffff;
-            
-            if (prev->size < (1ULL << 32))
-                mask_high = 0;
-            else
-                mask_high = (u32)(~(prev->size - 1) >> 32);
-            
-            bar->base_addr_val = value & mask_high;
-            return PCIBIOS_SUCCESSFUL;
-        }
+        return vph_write_bar_address(v, idx, value);
     }
-    else if (where == PCI_ROM_ADDRESS)
-    {
+
+    if (where == PCI_ROM_ADDRESS)
         return PCIBIOS_SUCCESSFUL;
-    }
+
     switch (size)
     {
     case 1:
