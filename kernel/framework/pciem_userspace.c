@@ -591,7 +591,6 @@ static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pcie
 
 static long pciem_ioctl_register(struct pciem_userspace_state *us)
 {
-    extern int pciem_complete_init(struct pciem_root_complex * v);
     int ret;
     int fd;
 
