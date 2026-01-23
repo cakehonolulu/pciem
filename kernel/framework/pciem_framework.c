@@ -728,20 +728,15 @@ int pciem_complete_init(struct pciem_root_complex *v)
 
     pci_bus_add_devices(v->root_bus);
 
-    if (v->root_bus)
-        pciem_bus_copy_resources(v);
+    pciem_bus_copy_resources(v);
 
     pci_bus_assign_resources(v->root_bus);
 
-    if (v->root_bus)
+    struct pci_dev *dev = pci_get_slot(v->root_bus, 0);
+    if (dev)
     {
-        struct pci_dev *dev;
-        dev = pci_get_slot(v->root_bus, 0);
-        if (dev)
-        {
-            pr_info("init: found pci_dev vendor=%04x device=%04x", dev->vendor, dev->device);
-            pci_dev_put(dev);
-        }
+        pr_info("init: found pci_dev vendor=%04x device=%04x", dev->vendor, dev->device);
+        pci_dev_put(dev);
     }
 
     v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
