@@ -452,12 +452,15 @@ static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, 
         size == 4)
     {
         int idx = (where - PCI_BASE_ADDRESS_0) / 4;
-        resource_size_t bsize = v->bars[idx].size;
+        struct pciem_bar_info *bar = &v->bars[idx];
+        struct pciem_bar_info *prev = idx > 0 && (idx % 2) == 1
+            ? &v->bars[idx - 1]
+            : NULL;
 
-        if (bsize != 0)
+        if (bar->size != 0)
         {
-            u32 mask = (u32)(~(bsize - 1));
-            if (v->bars[idx].flags & PCI_BASE_ADDRESS_SPACE_IO)
+            u32 mask = (u32)(~(bar->size - 1));
+            if (bar->flags & PCI_BASE_ADDRESS_SPACE_IO)
             {
                 mask &= ~PCI_BASE_ADDRESS_IO_MASK;
             }
@@ -466,24 +469,19 @@ static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, 
                 mask &= ~PCI_BASE_ADDRESS_MEM_MASK;
             }
 
-            v->bars[idx].base_addr_val = value & mask;
+            bar->base_addr_val = value & mask;
             return PCIBIOS_SUCCESSFUL;
         }
-        else if (idx > 0 && (idx % 2 == 1) && (v->bars[idx - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
+        else if (prev && (prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
         {
-            resource_size_t bsize_prev = v->bars[idx - 1].size;
             u32 mask_high = 0xffffffff;
             
-            if (bsize_prev < (1ULL << 32))
-            {
+            if (prev->size < (1ULL << 32))
                 mask_high = 0;
-            }
             else
-            {
-                mask_high = (u32)(~(bsize_prev - 1) >> 32);
-            }
+                mask_high = (u32)(~(prev->size - 1) >> 32);
             
-            v->bars[idx].base_addr_val = value & mask_high;
+            bar->base_addr_val = value & mask_high;
             return PCIBIOS_SUCCESSFUL;
         }
     }
