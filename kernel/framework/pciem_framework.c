@@ -175,7 +175,7 @@ static void pciem_msi_irq_work_func(struct irq_work *work)
     }
 }
 
-static void pciem_bus_copy_resources(struct pciem_root_complex *v)
+static void pciem_bus_init_resources(struct pciem_root_complex *v)
 {
     u32 i;
     struct pciem_bar_info *bar;
@@ -194,6 +194,9 @@ static void pciem_bus_copy_resources(struct pciem_root_complex *v)
             bar->res = &dev->resource[i];
         }
     }
+
+    pci_bus_assign_resources(v->root_bus);
+    pr_info("init: found pci_dev vendor=%04x device=%04x", dev->vendor, dev->device);
 }
 
 static int pciem_reserve_bar_res(struct pciem_bar_info *bar, u32 i, struct list_head *resources)
@@ -728,16 +731,7 @@ int pciem_complete_init(struct pciem_root_complex *v)
 
     pci_bus_add_devices(v->root_bus);
 
-    pciem_bus_copy_resources(v);
-
-    pci_bus_assign_resources(v->root_bus);
-
-    struct pci_dev *dev = pci_get_slot(v->root_bus, 0);
-    if (dev)
-    {
-        pr_info("init: found pci_dev vendor=%04x device=%04x", dev->vendor, dev->device);
-        pci_dev_put(dev);
-    }
+    pciem_bus_init_resources(v);
 
     v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
     if (!v->pciem_pdev)
