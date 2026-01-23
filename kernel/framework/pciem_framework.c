@@ -32,6 +32,7 @@
 #include "pciem_dma.h"
 #include "pciem_framework.h"
 #include "pciem_p2p.h"
+#include "pciem_userspace.h"
 
 static char *pciem_phys_regions = "";
 module_param(pciem_phys_regions, charp, 0444);

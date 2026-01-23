@@ -27,7 +27,6 @@ struct pciem_host_bridge_priv {
 };
 
 #include "pciem_p2p.h"
-#include "pciem_userspace.h"
 
 enum pciem_map_type
 {
