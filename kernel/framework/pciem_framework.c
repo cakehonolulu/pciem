@@ -526,6 +526,40 @@ static struct pci_ops vph_pci_ops = {
     .write = vph_write_config,
 };
 
+static struct resource *
+pciem_find_iomem_region(struct resource *r, resource_size_t start,
+                        resource_size_t end, struct resource **parent)
+{
+    struct resource *child;
+
+    BUG_ON(start > end);
+
+    while (r)
+    {
+        if (!(r->flags & IORESOURCE_MEM))
+            goto next;
+
+        /* Cannot fit in this region */
+        if (start < r->start || end >= r->end)
+            goto next;
+
+        /* Return early if exact match */
+        if (r->start == start && r->end == end)
+            return r;
+
+        /* Attempt to find in child node */
+        *parent = r;
+        child = pciem_find_iomem_region(r->child, start, end, parent);
+        if (child)
+            return child;
+
+next:
+        r = r->sibling;
+    }
+
+    return NULL;
+}
+
 int pciem_complete_init(struct pciem_root_complex *v)
 {
     int rc = 0;
@@ -587,39 +621,13 @@ int pciem_complete_init(struct pciem_root_complex *v)
 
         pr_info("init: BAR%u using pre-carved region [0x%llx-0x%llx]", i, (u64)start, (u64)end);
 
-        struct resource *r = iomem_resource.child;
         struct resource *found = NULL;
         struct resource *parent = NULL;
 
-        while (r)
-        {
-            if ((r->flags & IORESOURCE_MEM) && r->start <= start && r->end >= end)
-            {
-                struct resource *c = r->child;
-                while (c)
-                {
-                    if ((c->flags & IORESOURCE_MEM) && c->start == start && c->end == end)
-                    {
-                        found = c;
-                        break;
-                    }
-                    c = c->sibling;
-                }
+        found = pciem_find_iomem_region(iomem_resource.child, start, end, &parent);
 
-                if (found)
-                {
-                    break;
-                }
-
-                if (!parent || (r->start >= parent->start && r->end <= parent->end))
-                {
-                    parent = r;
-                }
-            }
-            r = r->sibling;
-        }
-
-        if (found && found->start == start && found->end == end)
+        /* Exact match */
+        if (found)
         {
             pr_info("init: BAR%u found existing iomem resource: %s [0x%llx-0x%llx]", i,
                     found->name ? found->name : "<unnamed>", (u64)found->start, (u64)found->end);
