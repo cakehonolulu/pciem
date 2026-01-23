@@ -550,17 +550,16 @@ int pciem_complete_init(struct pciem_root_complex *v)
     for (i = 0; i < PCI_STD_NUM_BARS; i++)
     {
         struct pciem_bar_info *bar = &v->bars[i];
+        struct pciem_bar_info *prev = i > 0 && (i % 2) == 1
+            ? &v->bars[i - 1]
+            : NULL;
         resource_size_t start, end;
 
         if (bar->size == 0)
-        {
             continue;
-        }
 
-        if (i > 0 && (i % 2 == 1) && (v->bars[i - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
-        {
+        if (prev && (prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
             continue;
-        }
 
         bar->order = get_order(bar->size);
         pr_info("init: preparing BAR%u physical memory (%llu KB, order %u)", i, (u64)bar->size / 1024, bar->order);
