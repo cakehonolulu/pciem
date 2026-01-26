@@ -9,7 +9,7 @@ struct pciem_bar_mapping
     struct hlist_node node;
     struct pci_bus *bus;
     unsigned int devfn;
-    int bar;
+    u32 bar;
     void __iomem *virt_addr;
     char dev_name[32];
 };
@@ -17,23 +17,23 @@ struct pciem_bar_mapping
 struct pci_iomap_data
 {
     struct pci_dev *pdev;
-    int bar;
+    u32 bar;
 };
 
 #define PCIEM_MAPPING_HASH_BITS 8
 static DEFINE_HASHTABLE(pciem_bar_mappings, PCIEM_MAPPING_HASH_BITS);
 static DEFINE_SPINLOCK(pciem_mapping_lock);
 
-static inline u32 pciem_hash(struct pci_bus *bus, unsigned int devfn, int bar)
+static inline u32 pciem_hash(struct pci_bus *bus, unsigned int devfn, u32 bar)
 {
     return hash_ptr(bus, PCIEM_MAPPING_HASH_BITS) ^ devfn ^ bar;
 }
 
-static void track_bar(struct pci_dev *pdev, int bar, void __iomem *vaddr)
+static void track_bar(struct pci_dev *pdev, u32 bar, void __iomem *vaddr)
 {
     struct pciem_bar_mapping *m;
 
-    if (!vaddr || !pdev || bar < 0 || bar >= PCI_STD_NUM_BARS)
+    if (!vaddr || !pdev || bar >= PCI_STD_NUM_BARS)
         return;
 
     m = kmalloc(sizeof(*m), GFP_ATOMIC);
@@ -50,7 +50,7 @@ static void track_bar(struct pci_dev *pdev, int bar, void __iomem *vaddr)
     hash_add(pciem_bar_mappings, &m->node, pciem_hash(pdev->bus, pdev->devfn, bar));
     spin_unlock(&pciem_mapping_lock);
 
-    pr_debug("PCIem: Tracked %s BAR%d -> %px\n", m->dev_name, bar, vaddr);
+    pr_debug("PCIem: Tracked %s BAR%u -> %px\n", m->dev_name, bar, vaddr);
 }
 
 static int entry_pci_iomap(struct kretprobe_instance *ri, struct pt_regs *regs)
@@ -92,7 +92,7 @@ static int ret_pcim_iomap_regions(struct kretprobe_instance *ri, struct pt_regs 
     int mask = data->bar;
     int ret = (int)regs_return_value(regs);
     void __iomem *const *iomap_table;
-    int bar;
+    u32 bar;
 
     if (ret != 0)
         return 0;
@@ -216,12 +216,12 @@ void pciem_cleanup_bar_tracking(void)
     spin_unlock(&pciem_mapping_lock);
 }
 
-void __iomem *pciem_get_driver_bar_vaddr(struct pci_dev *pdev, int bar)
+void __iomem *pciem_get_driver_bar_vaddr(struct pci_dev *pdev, u32 bar)
 {
     struct pciem_bar_mapping *m;
     void __iomem *vaddr = NULL;
 
-    if (!pdev || bar < 0 || bar >= PCI_STD_NUM_BARS)
+    if (!pdev || bar >= PCI_STD_NUM_BARS)
         return NULL;
 
     spin_lock(&pciem_mapping_lock);

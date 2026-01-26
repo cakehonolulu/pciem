@@ -493,7 +493,7 @@ static long pciem_ioctl_add_bar(struct pciem_userspace_state *us, struct pciem_b
 
     if (cfg.size && (cfg.size & (cfg.size - 1)))
     {
-        pr_err("BAR%d size 0x%llx is not a power of 2\n", cfg.bar_index, cfg.size);
+        pr_err("BAR%u size 0x%llx is not a power of 2\n", cfg.bar_index, cfg.size);
         return -EINVAL;
     }
 
@@ -501,7 +501,7 @@ static long pciem_ioctl_add_bar(struct pciem_userspace_state *us, struct pciem_b
 
     if (ret == 0)
     {
-        pr_info("Registered BAR%d: size=0x%llx, flags=0x%x\n", cfg.bar_index, cfg.size, cfg.flags);
+        pr_info("Registered BAR%u: size=0x%llx, flags=0x%x\n", cfg.bar_index, cfg.size, cfg.flags);
     }
 
     return ret;
@@ -804,7 +804,7 @@ static long pciem_ioctl_get_bar_info(struct pciem_userspace_state *us, struct pc
     if (copy_to_user(arg, &query, sizeof(query)))
         return -EFAULT;
 
-    pr_debug("BAR%d info: phys=0x%llx size=0x%llx flags=0x%x\n", query.bar_index, query.phys_addr, query.size,
+    pr_debug("BAR%u info: phys=0x%llx size=0x%llx flags=0x%x\n", query.bar_index, query.phys_addr, query.size,
              query.flags);
 
     return 0;
@@ -829,7 +829,7 @@ static void pciem_userspace_bp_handler(struct perf_event *bp, struct perf_sample
     pciem_userspace_queue_event(us, &event);
 }
 
-static void __iomem *pciem_resolve_bar_address(struct pci_dev *pdev, int bar_index, uint32_t flags)
+static void __iomem *pciem_resolve_bar_address(struct pci_dev *pdev, u32 bar, uint32_t flags)
 {
     void __iomem *bar_base = NULL;
     bool try_kprobes = true;
@@ -842,13 +842,13 @@ static void __iomem *pciem_resolve_bar_address(struct pci_dev *pdev, int bar_ind
     }
 
     if (try_kprobes) {
-        bar_base = pciem_get_driver_bar_vaddr(pdev, bar_index);
+        bar_base = pciem_get_driver_bar_vaddr(pdev, bar);
         if (bar_base) {
-            pr_debug("pciem_userspace: BAR%d resolved via kprobes\n", bar_index);
+            pr_debug("pciem_userspace: BAR%u resolved via kprobes\n", bar);
             return bar_base;
         }
         if (!try_manual) {
-            pr_warn("pciem_userspace: BAR%d not found via kprobes (kprobes-only mode)\n", bar_index);
+            pr_warn("pciem_userspace: BAR%u not found via kprobes (kprobes-only mode)\n", bar);
             return NULL;
         }
     }
@@ -868,14 +868,14 @@ static void __iomem *pciem_resolve_bar_address(struct pci_dev *pdev, int bar_ind
                 };
             */
             void __iomem **bar_array = (void __iomem **)((char *)drvdata + sizeof(struct pci_dev *));
-            bar_base = bar_array[bar_index];
+            bar_base = bar_array[bar];
             if (bar_base) {
-                pr_debug("pciem_userspace: BAR%d resolved via manual method\n", bar_index);
+                pr_debug("pciem_userspace: BAR%u resolved via manual method\n", bar);
                 return bar_base;
             }
         }
         if (!try_kprobes) {
-            pr_warn("pciem_userspace: BAR%d not found via manual method (manual-only mode)\n", bar_index);
+            pr_warn("pciem_userspace: BAR%u not found via manual method (manual-only mode)\n", bar);
             return NULL;
         }
     }
@@ -949,7 +949,7 @@ static long pciem_ioctl_set_watchpoint(struct pciem_userspace_state *us, struct 
         }
         us->watchpoints[wp_slot].active = false;
 
-        pr_info("pciem_userspace: Watchpoint[%d] disabled (BAR%d+0x%x)\n", wp_slot, us->watchpoints[wp_slot].bar_index,
+        pr_info("pciem_userspace: Watchpoint[%d] disabled (BAR%u+0x%x)\n", wp_slot, us->watchpoints[wp_slot].bar_index,
                 us->watchpoints[wp_slot].offset);
     }
 
@@ -972,7 +972,7 @@ static long pciem_ioctl_set_watchpoint(struct pciem_userspace_state *us, struct 
         const char *method_str = 
             (cfg.flags & PCIEM_WP_FLAG_BAR_KPROBES) ? " (kprobes-only)" :
             (cfg.flags & PCIEM_WP_FLAG_BAR_MANUAL) ? " (manual-only)" : "";
-        pr_err("pciem_userspace: Could not locate BAR%d mapping%s\n", 
+        pr_err("pciem_userspace: Could not locate BAR%u mapping%s\n",
                cfg.bar_index, method_str);
         return -EAGAIN;
     }
@@ -1021,7 +1021,7 @@ static long pciem_ioctl_set_watchpoint(struct pciem_userspace_state *us, struct 
     us->watchpoints[wp_slot].offset = cfg.offset;
     us->watchpoints[wp_slot].width = cfg.width;
 
-    pr_info("pciem_userspace: Watchpoint[%d] enabled on BAR%d+0x%x (VA %px, width %d)\n", wp_slot, cfg.bar_index,
+    pr_info("pciem_userspace: Watchpoint[%d] enabled on BAR%u+0x%x (VA %px, width %d)\n", wp_slot, cfg.bar_index,
             cfg.offset, target_va, cfg.width);
 
     if (!us->bar_tracking_disabled) {

@@ -96,6 +96,6 @@ void pciem_free_root_complex(struct pciem_root_complex *v);
 int pciem_init_bar_tracking(void);
 void pciem_cleanup_bar_tracking(void);
 void pciem_disable_bar_tracking(void);
-void __iomem *pciem_get_driver_bar_vaddr(struct pci_dev *pdev, int bar);
+void __iomem *pciem_get_driver_bar_vaddr(struct pci_dev *pdev, u32 bar);
 
 #endif /* PCIEM_FRAMEWORK_H */
