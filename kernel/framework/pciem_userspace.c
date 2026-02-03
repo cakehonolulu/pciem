@@ -294,6 +294,8 @@ void pciem_userspace_queue_event(struct pciem_userspace_state *us, struct pciem_
     spin_lock_irqsave(&us->eventfd_lock, flags);
     if (us->eventfd)
         pciem_eventfd_signal(us);
+    else
+        atomic_set(&us->event_pending, 1);
     spin_unlock_irqrestore(&us->eventfd_lock, flags);
 }
 
@@ -1068,11 +1070,17 @@ static long pciem_ioctl_set_eventfd(struct pciem_userspace_state *us, struct pci
     us->eventfd = eventfd;
     spin_unlock_irqrestore(&us->eventfd_lock, flags);
 
-    if (old_eventfd)
-    {
-        eventfd_ctx_put(old_eventfd);
-        pr_info("Unregistered previous eventfd\n");
+    /* If there was no previous eventfd, there may be pending events
+     * from before userspace registered this eventfd */
+    if (!old_eventfd) {
+        if (atomic_xchg(&us->event_pending, 0))
+            pciem_eventfd_signal(us);
+        return 0;
     }
+
+    /* Free the previous eventfd */
+    eventfd_ctx_put(old_eventfd);
+    pr_info("Unregistered previous eventfd\n");
 
     return 0;
 }
