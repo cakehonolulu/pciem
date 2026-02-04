@@ -527,13 +527,6 @@ int pciem_complete_init(struct pciem_root_complex *v)
         goto fail_pdev_null;
     }
 
-    rc = parse_phys_regions(v);
-    if (rc)
-    {
-        pr_err("pciem: Failed to parse physical regions: %d\n", rc);
-        goto fail_pdev;
-    }
-
     rc = pciem_p2p_init(v, p2p_regions);
     if (rc) {
         pr_warn("pciem: P2P init failed: %d (non-fatal)\n", rc);
@@ -701,7 +694,6 @@ fail_res_list:
     resource_list_free(&resources);
 fail_bars:
     pciem_cleanup_bars(v);
-fail_pdev:
     platform_device_unregister(v->shared_bridge_pdev);
 fail_pdev_null:
     v->shared_bridge_pdev = NULL;
@@ -784,6 +776,7 @@ static void __exit pciem_exit(void)
 struct pciem_root_complex *pciem_alloc_root_complex(void)
 {
     struct pciem_root_complex *v;
+    int ret;
 
     v = kzalloc(sizeof(*v), GFP_KERNEL);
     if (!v)
@@ -796,6 +789,12 @@ struct pciem_root_complex *pciem_alloc_root_complex(void)
     init_irq_work(&v->msi_irq_work, pciem_msi_irq_work_func);
     v->pending_msi_irq = 0;
     memset(v->bars, 0, sizeof(v->bars));
+
+    ret = parse_phys_regions(v);
+    if (ret) {
+        kfree(v);
+        return ERR_PTR(ret);
+    }
 
     pr_info("Allocated pciem root complex\n");
     return v;
