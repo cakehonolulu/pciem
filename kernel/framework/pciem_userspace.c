@@ -281,9 +281,9 @@ static bool pciem_shared_ring_push(struct pciem_userspace_state *us,
 static void pciem_eventfd_signal(struct pciem_userspace_state *us)
 {
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(6,7,0)
-        eventfd_signal(us->eventfd, 1);
+    eventfd_signal(us->eventfd, 1);
 #else
-        eventfd_signal(us->eventfd);
+    eventfd_signal(us->eventfd);
 #endif
 }
 
