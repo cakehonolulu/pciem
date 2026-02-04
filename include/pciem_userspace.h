@@ -152,14 +152,6 @@ struct pciem_bar_info_query
     uint32_t flags;
 };
 
-struct pciem_watchpoint_config
-{
-    uint32_t bar_index;
-    uint32_t offset;
-    uint32_t width;
-    uint32_t flags;
-};
-
 #define PCIEM_WP_FLAG_BAR_KPROBES  (1 << 0)
 #define PCIEM_WP_FLAG_BAR_MANUAL   (1 << 1)
 
@@ -204,7 +196,6 @@ struct pciem_dma_indirect
 #define PCIEM_IOCTL_DMA_ATOMIC _IOWR(PCIEM_IOCTL_MAGIC, 17, struct pciem_dma_atomic)
 #define PCIEM_IOCTL_P2P _IOWR(PCIEM_IOCTL_MAGIC, 18, struct pciem_p2p_op_user)
 #define PCIEM_IOCTL_GET_BAR_INFO _IOWR(PCIEM_IOCTL_MAGIC, 19, struct pciem_bar_info_query)
-#define PCIEM_IOCTL_SET_WATCHPOINT _IOW(PCIEM_IOCTL_MAGIC, 20, struct pciem_watchpoint_config)
 #define PCIEM_IOCTL_SET_EVENTFD _IOW(PCIEM_IOCTL_MAGIC, 21, struct pciem_eventfd_config)
 #define PCIEM_IOCTL_SET_IRQFD _IOW(PCIEM_IOCTL_MAGIC, 22, struct pciem_irqfd_config)
 #define PCIEM_IOCTL_DMA_INDIRECT _IOWR(PCIEM_IOCTL_MAGIC, 24, struct pciem_dma_indirect)
@@ -222,17 +213,6 @@ struct pciem_shared_ring
 };
 
 #ifdef __KERNEL__
-
-#define MAX_WATCHPOINTS 8
-
-struct pciem_watchpoint_info
-{
-    bool active;
-    uint32_t bar_index;
-    uint32_t offset;
-    uint32_t width;
-    struct perf_event * __percpu * perf_bp;
-};
 
 struct pciem_irqfd
 {
@@ -267,9 +247,6 @@ struct pciem_userspace_state
 
     struct pciem_shared_ring *shared_ring;
     spinlock_t shared_ring_lock;
-
-    struct pciem_watchpoint_info watchpoints[MAX_WATCHPOINTS];
-    spinlock_t watchpoint_lock;
 
     struct eventfd_ctx *eventfd;
     spinlock_t eventfd_lock;

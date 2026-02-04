@@ -360,19 +360,6 @@ static void process_command_local(void)
     inject_irq(0);
 }
 
-static int setup_watchpoints(void)
-{
-    struct pciem_watchpoint_config wp;
-    wp.bar_index = 0;
-    wp.offset = REG_CMD;
-    wp.width = 4;
-    wp.flags = 1;
-    int ret = ioctl(dev_state.pciem_fd, PCIEM_IOCTL_SET_WATCHPOINT, &wp);
-    if (ret < 0 && errno == EAGAIN)
-        return -EAGAIN;
-    return ret;
-}
-
 static int setup_eventfd(void)
 {
     struct pciem_eventfd_config efd_cfg;
@@ -645,26 +632,6 @@ int main(void)
     else
     {
         printf("[X] QEMU socket not found, running internal emulation...\n");
-    }
-
-    {
-        int retry_count = 0;
-        while (dev_running(&dev_state) && retry_count < 2000)
-        {
-            int ret = setup_watchpoints();
-            if (ret == 0)
-            {
-                printf("[\x1b[32m*\x1b[0m] Watchpoints enabled successfully\n");
-                break;
-            }
-            if (errno != EAGAIN)
-            {
-                printf("[!] Watchpoint setup failed: %s (continuing without watchpoints)\n", strerror(errno));
-                break;
-            }
-            retry_count++;
-            usleep(100000);
-        }
     }
 
     if (setup_eventfd() < 0)

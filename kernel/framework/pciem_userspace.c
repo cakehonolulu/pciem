@@ -206,13 +206,6 @@ struct pciem_userspace_state *pciem_userspace_create(void)
     atomic_set(&us->registered, PCIEM_UNREGISTERED);
     atomic_set(&us->event_pending, 0);
 
-    spin_lock_init(&us->watchpoint_lock);
-    for (i = 0; i < MAX_WATCHPOINTS; i++)
-    {
-        us->watchpoints[i].active = false;
-        us->watchpoints[i].perf_bp = NULL;
-    }
-
     us->eventfd = NULL;
     spin_lock_init(&us->eventfd_lock);
 
@@ -229,16 +222,6 @@ void pciem_userspace_destroy(struct pciem_userspace_state *us)
 
     if (!us)
         return;
-
-    for (i = 0; i < MAX_WATCHPOINTS; i++)
-    {
-        if (us->watchpoints[i].active && us->watchpoints[i].perf_bp)
-        {
-            unregister_wide_hw_breakpoint(us->watchpoints[i].perf_bp);
-            us->watchpoints[i].perf_bp = NULL;
-            us->watchpoints[i].active = false;
-        }
-    }
 
     pciem_irqfds_shutdown(&us->irqfds);
 
@@ -817,24 +800,6 @@ static long pciem_ioctl_get_bar_info(struct pciem_userspace_state *us, struct pc
     return 0;
 }
 
-static void pciem_userspace_bp_handler(struct perf_event *bp, struct perf_sample_data *data, struct pt_regs *regs)
-{
-    unsigned long context = (unsigned long)bp->overflow_handler_context;
-    struct pciem_userspace_state *us = (struct pciem_userspace_state *)(context & ~0xFFUL);
-    int wp_index = (int)(context & 0xFF);
-
-    if (!us || wp_index >= MAX_WATCHPOINTS)
-        return;
-
-    struct pciem_watchpoint_info *wp = &us->watchpoints[wp_index];
-    if (!wp->active)
-        return;
-
-    struct pciem_event event = {
-        .type = PCIEM_EVENT_MMIO_WRITE, .bar = wp->bar_index, .offset = wp->offset, .size = wp->width, .data = 0};
-
-    pciem_userspace_queue_event(us, &event);
-}
 
 static void __iomem *pciem_resolve_bar_address(struct pci_dev *pdev, u32 bar, uint32_t flags)
 {
@@ -888,155 +853,6 @@ static void __iomem *pciem_resolve_bar_address(struct pci_dev *pdev, u32 bar, ui
     }
     
     return NULL;
-}
-
-static long pciem_ioctl_set_watchpoint(struct pciem_userspace_state *us, struct pciem_watchpoint_config __user *arg)
-{
-    struct pciem_watchpoint_config cfg;
-    struct pci_dev *pdev;
-    void __iomem *bar_base;
-    void __iomem *target_va;
-    struct perf_event_attr attr;
-    unsigned long flags;
-    int wp_slot = -1;
-    int i, ret;
-
-    ret = pciem_check_registered(us);
-    if (ret)
-        return ret;
-
-    if (copy_from_user(&cfg, arg, sizeof(cfg)))
-        return -EFAULT;
-
-    if (cfg.bar_index >= PCI_STD_NUM_BARS)
-        return -EINVAL;
-
-    spin_lock_irqsave(&us->watchpoint_lock, flags);
-
-    for (i = 0; i < MAX_WATCHPOINTS; i++)
-    {
-        if (us->watchpoints[i].active && us->watchpoints[i].bar_index == cfg.bar_index &&
-            us->watchpoints[i].offset == cfg.offset)
-        {
-            wp_slot = i;
-            break;
-        }
-    }
-
-    if (wp_slot == -1 && cfg.flags != 0)
-    {
-        for (i = 0; i < MAX_WATCHPOINTS; i++)
-        {
-            if (!us->watchpoints[i].active)
-            {
-                wp_slot = i;
-                break;
-            }
-        }
-    }
-
-    spin_unlock_irqrestore(&us->watchpoint_lock, flags);
-
-    if (wp_slot == -1)
-    {
-        if (cfg.flags != 0)
-        {
-            pr_err("pciem_userspace: No free watchpoint slots (max %d)\n", MAX_WATCHPOINTS);
-            return -ENOSPC;
-        }
-        return 0;
-    }
-
-    if (us->watchpoints[wp_slot].active)
-    {
-        if (us->watchpoints[wp_slot].perf_bp)
-        {
-            unregister_wide_hw_breakpoint(us->watchpoints[wp_slot].perf_bp);
-            us->watchpoints[wp_slot].perf_bp = NULL;
-        }
-        us->watchpoints[wp_slot].active = false;
-
-        pr_info("pciem_userspace: Watchpoint[%d] disabled (BAR%u+0x%x)\n", wp_slot, us->watchpoints[wp_slot].bar_index,
-                us->watchpoints[wp_slot].offset);
-    }
-
-    if (cfg.flags == 0)
-    {
-        return 0;
-    }
-
-    pdev = us->rc->pciem_pdev;
-    if (!pdev)
-    {
-        pr_err("pciem_userspace: No pdev available\n");
-        return -ENODEV;
-    }
-
-    bar_base = pciem_resolve_bar_address(pdev, cfg.bar_index, cfg.flags);
-
-    if (!bar_base)
-    {
-        const char *method_str = 
-            (cfg.flags & PCIEM_WP_FLAG_BAR_KPROBES) ? " (kprobes-only)" :
-            (cfg.flags & PCIEM_WP_FLAG_BAR_MANUAL) ? " (manual-only)" : "";
-        pr_err("pciem_userspace: Could not locate BAR%u mapping%s\n",
-               cfg.bar_index, method_str);
-        return -EAGAIN;
-    }
-
-    target_va = bar_base + cfg.offset;
-
-    hw_breakpoint_init(&attr);
-    attr.bp_addr = (unsigned long)target_va;
-
-    switch (cfg.width)
-    {
-    case 1:
-        attr.bp_len = HW_BREAKPOINT_LEN_1;
-        break;
-    case 2:
-        attr.bp_len = HW_BREAKPOINT_LEN_2;
-        break;
-    case 4:
-        attr.bp_len = HW_BREAKPOINT_LEN_4;
-        break;
-    case 8:
-        attr.bp_len = HW_BREAKPOINT_LEN_8;
-        break;
-    default:
-        pr_err("pciem_userspace: Invalid watchpoint width %d\n", cfg.width);
-        return -EINVAL;
-    }
-
-    attr.bp_type = HW_BREAKPOINT_W;
-    attr.disabled = false;
-
-    unsigned long context = ((unsigned long)us & ~0xFFUL) | (wp_slot & 0xFF);
-
-    us->watchpoints[wp_slot].perf_bp = register_wide_hw_breakpoint(&attr, pciem_userspace_bp_handler, (void *)context);
-
-    if (IS_ERR_PCPU(us->watchpoints[wp_slot].perf_bp))
-    {
-        int err = PTR_ERR_PCPU(us->watchpoints[wp_slot].perf_bp);
-        us->watchpoints[wp_slot].perf_bp = NULL;
-        pr_err("pciem_userspace: Failed to register watchpoint: %d\n", err);
-        return err;
-    }
-
-    us->watchpoints[wp_slot].active = true;
-    us->watchpoints[wp_slot].bar_index = cfg.bar_index;
-    us->watchpoints[wp_slot].offset = cfg.offset;
-    us->watchpoints[wp_slot].width = cfg.width;
-
-    pr_info("pciem_userspace: Watchpoint[%d] enabled on BAR%u+0x%x (VA %px, width %d)\n", wp_slot, cfg.bar_index,
-            cfg.offset, target_va, cfg.width);
-
-    if (!us->bar_tracking_disabled) {
-        pciem_disable_bar_tracking();
-        us->bar_tracking_disabled = true;
-    }
-
-    return 0;
 }
 
 static long pciem_ioctl_set_eventfd(struct pciem_userspace_state *us, struct pciem_eventfd_config __user *arg)
@@ -1374,9 +1190,6 @@ static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned lon
 
     case PCIEM_IOCTL_GET_BAR_INFO:
         return pciem_ioctl_get_bar_info(us, (struct pciem_bar_info_query __user *)arg);
-
-    case PCIEM_IOCTL_SET_WATCHPOINT:
-        return pciem_ioctl_set_watchpoint(us, (struct pciem_watchpoint_config __user *)arg);
 
     case PCIEM_IOCTL_SET_EVENTFD:
         return pciem_ioctl_set_eventfd(us, (struct pciem_eventfd_config __user *)arg);
