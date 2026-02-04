@@ -258,6 +258,9 @@ void pciem_userspace_destroy(struct pciem_userspace_state *us)
 
     __free_pages(virt_to_page(us->shared_ring), get_order(sizeof(struct pciem_shared_ring)));
 
+    if (us->eventfd)
+        eventfd_ctx_put(us->eventfd);
+
     kfree(us);
 }
 
