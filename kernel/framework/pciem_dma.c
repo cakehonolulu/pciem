@@ -15,156 +15,140 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
-static int translate_iova(struct pciem_root_complex *v, u64 guest_iova, size_t len,
-                          phys_addr_t **phys_pages_out, int *num_pages)
+static int translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
+                          size_t len, phys_addr_t **phys_pages_out,
+                          unsigned int *num_pages)
 {
-    struct iommu_domain *domain;
-    size_t remaining = len;
-    u64 iova = guest_iova;
-    int page_count = 0;
-    int max_pages;
-    phys_addr_t *phys_pages;
+    struct iommu_domain *domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
+    dma_addr_t iova, iova_start, iova_end;
+    size_t max_pages, page_count = 0;
+    phys_addr_t *pages = NULL;
+    int ret;
 
-    domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
+    iova_start = PAGE_ALIGN_DOWN(guest_iova);
+    iova_end = PAGE_ALIGN(guest_iova + len);
+    max_pages = (iova_end - iova_start) >> PAGE_SHIFT;
 
-    max_pages = ((PAGE_ALIGN(guest_iova + len) - (guest_iova & PAGE_MASK)) >> PAGE_SHIFT) + 1;
+    pr_info("DMA: translate: 0x%llx (0x%llx - 0x%llx) (%lu pages)",
+            guest_iova, iova_start, iova_end, max_pages);
 
-    phys_pages = kmalloc_array(max_pages, sizeof(phys_addr_t), GFP_KERNEL);
-    if (!phys_pages) {
-        pr_err("translate_iova: failed to allocate page array for %d pages\n", max_pages);
-        return -ENOMEM;
+    pages = kmalloc_array(max_pages, sizeof(phys_addr_t), GFP_KERNEL);
+    if (!pages) {
+        ret = -ENOMEM;
+        goto fail;
     }
 
-    while (remaining > 0)
-    {
+    for (iova = iova_start; iova < iova_end; iova += PAGE_SIZE) {
         phys_addr_t hpa;
-        size_t chunk_len;
-
-        if (page_count >= max_pages)
-        {
-            pr_err("translate_iova: page buffer overflow (max %d)\n", max_pages);
-            kfree(phys_pages);
-            return -EOVERFLOW;
-        }
 
         if (domain) {
             hpa = iommu_iova_to_phys(domain, iova);
-            if (!hpa)
-            {
-                pr_err("Failed to translate IOVA 0x%llx\n", iova);
-                kfree(phys_pages);
-                return -EFAULT;
+            if (!hpa) {
+                ret = -EFAULT;
+                goto fail;
             }
         } else {
-            hpa = (phys_addr_t)iova;
+            hpa = iova;
         }
 
-        phys_pages[page_count++] = hpa;
-
-        chunk_len = min_t(size_t, remaining, PAGE_SIZE - (iova & ~PAGE_MASK));
-        remaining -= chunk_len;
-        iova += chunk_len;
+        pages[page_count++] = hpa;
     }
 
     *num_pages = page_count;
-    *phys_pages_out = phys_pages;
+    *phys_pages_out = pages;
+
     return 0;
+
+fail:
+    pr_err("failed to translate IOVA=%llx (%d)", guest_iova, ret);
+    if (pages)
+        kfree(pages);
+    return ret;
 }
 
-int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova, void *dst, size_t len, u32 pasid)
+int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
+                              void *dst, size_t len, u32 pasid)
 {
-    phys_addr_t *phys_pages = NULL;
-    int num_pages = 0;
-    size_t offset = 0;
-    int i;
-    u8 *dst_buf = (u8 *)dst;
+    phys_addr_t *pages = NULL;
+    unsigned int i, num_pages;
+    size_t dst_offset = 0;
     int ret;
 
-    if (!v || !dst || len == 0)
-    {
+    if (!v || !dst || !len)
         return -EINVAL;
-    }
 
-    ret = translate_iova(v, guest_iova, len, &phys_pages, &num_pages);
-    if (ret < 0)
-    {
+    ret = translate_iova(v, guest_iova, len, &pages, &num_pages);
+    if (ret)
         return ret;
-    }
 
-    pr_info("pciem: DMA read: IOVA 0x%llx -> %d pages, len %zu, PASID %u\n", 
-            guest_iova, num_pages, len, pasid);
+    pr_info("DMA: read:  src=0x%llx dst=0x%lx len=0x%lx (%u pages) PASID %u\n",
+            guest_iova, (size_t)dst, len, num_pages, pasid);
 
-    for (i = 0; i < num_pages && offset < len; i++)
-    {
-        void *kva;
-        size_t chunk_len;
-        size_t page_offset = (i == 0) ? (guest_iova & ~PAGE_MASK) : 0;
+    for (i = 0; i < num_pages; ++i) {
+        void *src;
+        size_t src_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
+        size_t chunk_len = min_t(size_t, PAGE_SIZE - src_offset, len - dst_offset);
 
-        chunk_len = min_t(size_t, len - offset, PAGE_SIZE - page_offset);
-
-        kva = memremap(phys_pages[i], chunk_len, MEMREMAP_WB);
-        if (!kva)
-        {
-            pr_err("pciem: memremap failed for physical page %pa\n", &phys_pages[i]);
-            kfree(phys_pages);
+        src = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
+        if (!src) {
+            kfree(pages);
             return -ENOMEM;
         }
 
-        memcpy(dst_buf + offset, kva, chunk_len);
-        memunmap(kva);
+        pr_info("DMA: read%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
+                i, (size_t)src + src_offset, (size_t)dst + dst_offset,
+                chunk_len, pages[i] + src_offset);
 
-        offset += chunk_len;
+        memcpy(dst + dst_offset, src + src_offset, chunk_len);
+        memunmap(src);
+
+        dst_offset += chunk_len;
     }
 
-    kfree(phys_pages);
+    kfree(pages);
     return 0;
 }
 EXPORT_SYMBOL(pciem_dma_read_from_guest);
 
-int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova, const void *src, size_t len, u32 pasid)
+int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
+                             const void *src, size_t len, u32 pasid)
 {
-    phys_addr_t *phys_pages = NULL;
-    int num_pages = 0;
-    size_t offset = 0;
-    int i;
+    phys_addr_t *pages;
+    unsigned int i, num_pages;
+    size_t src_offset = 0;
     int ret;
 
-    if (!v || !src || len == 0)
-    {
+    if (!v || !src || !len)
         return -EINVAL;
-    }
 
-    ret = translate_iova(v, guest_iova, len, &phys_pages, &num_pages);
-    if (ret < 0)
-    {
+    ret = translate_iova(v, guest_iova, len, &pages, &num_pages);
+    if (ret)
         return ret;
-    }
 
-    pr_info("DMA write: IOVA 0x%llx -> %d pages, len %zu, PASID %u\n", guest_iova, num_pages, len, pasid);
+    pr_info("DMA: write:  src=0x%lx dst=0x%llx len=0x%lx (%u pages) PASID %u\n",
+            (size_t)src, guest_iova, len, num_pages, pasid);
 
-    for (i = 0; i < num_pages && offset < len; i++)
-    {
-        void *kva;
-        size_t chunk_len;
-        size_t page_offset = (i == 0) ? (guest_iova & ~PAGE_MASK) : 0;
+    for (i = 0; i < num_pages; ++i) {
+        void *dst;
+        unsigned int dst_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
+        size_t chunk_len = min_t(size_t, PAGE_SIZE - dst_offset, len - src_offset);
 
-        chunk_len = min_t(size_t, len - offset, PAGE_SIZE - page_offset);
-
-        kva = memremap(phys_pages[i], chunk_len, MEMREMAP_WB);
-        if (!kva)
-        {
-            pr_err("Failed to map physical page %pa\n", &phys_pages[i]);
-            kfree(phys_pages);
+        dst = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
+        if (!dst) {
+            kfree(pages);
             return -ENOMEM;
         }
 
-        memcpy(kva, (u8 *)src + offset, chunk_len);
-        memunmap(kva);
+        pr_info("DMA: write%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
+                i, (size_t)src + src_offset, (size_t)dst + dst_offset,
+                chunk_len, pages[i] + dst_offset);
 
-        offset += chunk_len;
+        memcpy(dst + dst_offset, src + src_offset, chunk_len);
+        memunmap(dst);
+        src_offset += chunk_len;
     }
 
-    kfree(phys_pages);
+    kfree(pages);
     return 0;
 }
 EXPORT_SYMBOL(pciem_dma_write_to_guest);
