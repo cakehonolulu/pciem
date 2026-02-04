@@ -141,7 +141,7 @@ EXPORT_SYMBOL(pciem_register_bar);
 void pciem_trigger_msi(struct pciem_root_complex *v, int vector)
 {
     struct pci_dev *dev = v->pciem_pdev;
-    unsigned int irq;
+    int irq;
 
     if (!dev || (!dev->msi_enabled && !dev->msix_enabled))
     {
@@ -152,8 +152,8 @@ void pciem_trigger_msi(struct pciem_root_complex *v, int vector)
 
     if (dev->msix_enabled) {
         irq = pci_irq_vector(dev, vector);
-        if (irq == 0) {
-            pr_warn("Cannot get IRQ for MSI-X vector %d\n", vector);
+        if (irq < 0) {
+            pr_warn("Cannot get IRQ for MSI-X vector %d: %d\n", vector, irq);
             return;
         }
         pr_info("Triggering MSI-X vector %d (IRQ %u) via irq_work\n", vector, irq);
