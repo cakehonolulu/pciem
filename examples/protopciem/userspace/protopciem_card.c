@@ -474,6 +474,10 @@ static int register_device(struct device_state *st)
             .has_masking = 1,
         },
     };
+    struct pciem_trace_bar trace = {
+        .bar_index = 0,
+        .flags = PCIEM_TRACE_WRITES,
+    };
 
     st->pciem_fd = open("/dev/pciem", O_RDWR);
     if (st->pciem_fd < 0) {
@@ -484,6 +488,7 @@ static int register_device(struct device_state *st)
     ioctl(st->pciem_fd, PCIEM_IOCTL_CREATE_DEVICE, &create);
     ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar0);
     ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar2);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_TRACE_BAR, &trace);
     ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_CAPABILITY, &cap);
     ioctl(st->pciem_fd, PCIEM_IOCTL_SET_CONFIG, &cfg);
 
