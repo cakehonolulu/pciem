@@ -247,72 +247,8 @@ static int pciem_reserve_bars_res(struct pciem_root_complex *v, struct list_head
     return 0;
 }
 
-static int pciem_map_bar_userspace(struct pciem_bar_info *bar, u32 i)
-{
-    pr_info("init: BAR%u userspace mode - lightweight kernel mapping", i);
-
-    bar->virt_addr = ioremap(bar->phys_addr, bar->size);
-    if (bar->virt_addr) {
-        bar->map_type = PCIEM_MAP_IOREMAP;
-        return 0;
-    }
-
-    pr_warn("init: BAR%u kernel mapping failed, continuing without it (userspace will map directly)", i);
-    bar->map_type = PCIEM_MAP_NONE;
-    bar->virt_addr = NULL;
-    return 0;
-}
-
-static int pciem_map_bars(struct pciem_root_complex *v)
-{
-    int rc;
-    u32 i;
-    struct pciem_bar_info *bar, *prev = NULL;
-
-    for (i = 0; i < PCI_STD_NUM_BARS; i++)
-    {
-        bar = &v->bars[i];
-        if (i > 0)
-            prev = &v->bars[i - 1];
-
-        if (!bar->size)
-            continue;
-
-        if (i & 1 && prev && prev->flags & PCI_BASE_ADDRESS_MEM_TYPE_64)
-            continue;
-
-        bar->map_type = PCIEM_MAP_NONE;
-
-        rc = pciem_map_bar_userspace(bar, i);
-
-        if (rc) {
-            pr_err("init: Failed to create mapping for BAR%u", i);
-            return rc;
-        }
-
-        if (bar->virt_addr) {
-            pr_info("init: BAR%u mapped at %px for emulator (map_type=%d)",
-                    i, bar->virt_addr, bar->map_type);
-        } else {
-            pr_info("init: BAR%u physical at 0x%llx (no kernel mapping)",
-                    i, (u64)bar->phys_addr);
-        }
-    }
-
-    return 0;
-}
-
 static void pciem_cleanup_bar(struct pciem_bar_info *bar)
 {
-    if (bar->virt_addr)
-    {
-        if (bar->map_type == PCIEM_MAP_IOREMAP_CACHE || bar->map_type == PCIEM_MAP_IOREMAP ||
-            bar->map_type == PCIEM_MAP_IOREMAP_WC)
-        {
-            iounmap(bar->virt_addr);
-        }
-        bar->virt_addr = NULL;
-    }
     if (bar->allocated_res && bar->mem_owned_by_framework)
     {
         if (bar->allocated_res->parent) {
@@ -641,7 +577,6 @@ int pciem_complete_init(struct pciem_root_complex *v)
             bar->allocated_res = found;
             bar->mem_owned_by_framework = false;
             bar->phys_addr = start;
-            bar->virt_addr = NULL;
             bar->pages = NULL;
         }
         else
@@ -679,7 +614,6 @@ int pciem_complete_init(struct pciem_root_complex *v)
             bar->allocated_res = mem_res;
             bar->mem_owned_by_framework = true;
             bar->phys_addr = start;
-            bar->virt_addr = NULL;
             bar->pages = NULL;
             pr_info("init: BAR%u successfully reserved [0x%llx-0x%llx]", i, (u64)start, (u64)end);
         }
@@ -749,10 +683,6 @@ int pciem_complete_init(struct pciem_root_complex *v)
         rc = -ENODEV;
         goto fail_map;
     }
-
-    rc = pciem_map_bars(v);
-    if (rc)
-        goto fail_map;
 
     pr_info("init: pciem instance ready");
     return 0;
