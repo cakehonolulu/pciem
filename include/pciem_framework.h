@@ -105,6 +105,8 @@ struct pciem_root_complex
     resource_size_t next_carve_offset;
 
     struct pciem_p2p_manager *p2p_mgr;
+
+    bool detaching;
 };
 
 void pciem_trigger_msi(struct pciem_root_complex *v, int vector);

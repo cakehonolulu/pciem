@@ -318,6 +318,10 @@ static int pciem_conf_read_impl(struct pciem_root_complex *v, int where, int siz
         *value = ~0U;
         return PCIBIOS_DEVICE_NOT_FOUND;
     }
+    if (unlikely(v->detaching)) {
+        *value = ~0U;
+        return PCIBIOS_DEVICE_NOT_FOUND;
+    }
     if (where < 0 || (where + size) > (int)sizeof(v->cfg))
     {
         *value = ~0U;
@@ -404,6 +408,9 @@ static int pciem_conf_write_impl(struct pciem_root_complex *v, int where, int si
     if (!v)
     {
         return PCIBIOS_DEVICE_NOT_FOUND;
+    }
+    if (unlikely(v->detaching)) {
+        return PCIBIOS_SUCCESSFUL;
     }
     if (where < 0 || (where + size) > (int)sizeof(v->cfg))
     {
@@ -939,13 +946,16 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
 
     irq_work_sync(&v->msi_irq_work);
 
-    if (v->pciem_pdev)
-    {
-        if (v->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
-            pci_stop_and_remove_bus_device(v->pciem_pdev);
-        } else {
-            pci_dev_put(v->pciem_pdev);
+    if (v->pciem_pdev) {
+        struct device_driver *drv = v->pciem_pdev->dev.driver;
+
+        if (drv) {
+            pr_info("exit: Device %s bound to driver '%s' - initiating removal\n",
+                    pci_name(v->pciem_pdev), drv->name);
+            v->detaching = true;
         }
+
+        pci_stop_and_remove_bus_device(v->pciem_pdev);
         v->pciem_pdev = NULL;
     }
 
