@@ -40,13 +40,23 @@
 #include <linux/kallsyms.h>
 #include <linux/sched.h>
 #include <linux/ptrace.h>
+#include <linux/version.h>
 #include <asm/debugreg.h>
+#include <asm/io.h>
 #include <asm/tlbflush.h>
 #include <asm/traps.h>
 
 #include "insn.h"
 #include "insn-eval.h"
 #include "trace/smptrace.h"
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+static inline pud_t pud_mkinvalid(pud_t pud)
+{
+       return pfn_pud(pud_pfn(pud),
+                      __pgprot(pud_flags(pud) & ~(_PAGE_PRESENT|_PAGE_PROTNONE)));
+}
+#endif
 
 static void ____write_cr4(unsigned long val)
 {
