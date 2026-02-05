@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
+/*
+ * Copyright (C) 2025-2026  Joel Bueno <buenocalvachejoel@gmail.com>
+ */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/completion.h>
 #include <linux/delay.h>

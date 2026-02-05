@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
+/*
+ * Copyright (C) 2025-2026  Joel Bueno <buenocalvachejoel@gmail.com>
+ */
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>

@@ -113,9 +113,8 @@ Can run software-rendered DOOM (Submits finished frames with DMA to the card whi
 
 ## License
 
-Dual MIT/GPLv2 (`pciem_framework.c` and `protopciem_driver.c` due to using GPL symbols).
-
-MIT (Rest).
+* PCIem kernel components: GPLv2
+* Examples: dual MIT/GPLv2.
 
 ## References
 
