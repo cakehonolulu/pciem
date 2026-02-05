@@ -13,7 +13,12 @@
 #endif
 #include "inat.h" /*__ignore_sync_check__ */
 #include "insn.h" /* __ignore_sync_check__ */
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+#include <asm/unaligned.h>
+#else
 #include <linux/unaligned.h> /* __ignore_sync_check__ */
+#endif
 
 #include <linux/errno.h>
 #include <linux/kconfig.h>
