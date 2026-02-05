@@ -22,6 +22,10 @@
 typedef atomic_int atomic_t;
 #endif
 
+#define PCIEM_CREATE_FLAG_BUS_MODE_MASK     0x00000003
+#define PCIEM_CREATE_FLAG_BUS_MODE_VIRTUAL  0x00000000
+#define PCIEM_CREATE_FLAG_BUS_MODE_ATTACH   0x00000001
+
 struct pciem_create_device
 {
     uint32_t flags;

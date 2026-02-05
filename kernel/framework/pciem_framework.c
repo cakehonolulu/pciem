@@ -53,6 +53,7 @@ MODULE_PARM_DESC(p2p_regions,
 
 static struct miscdevice pciem_dev;
 static const struct file_operations pciem_fops;
+static struct pci_ops vph_pci_ops;
 
 static void pciem_fixup_bridge_domain(struct pci_host_bridge *bridge, 
                                       struct pciem_host_bridge_priv *priv, 
@@ -270,7 +271,7 @@ static void pciem_cleanup_bars(struct pciem_root_complex *v)
         pciem_cleanup_bar(&v->bars[i]);
 }
 
-static u32 vph_read_bar_address(const struct pciem_root_complex *v, u32 idx)
+static u32 pciem_read_bar_address(const struct pciem_root_complex *v, u32 idx)
 {
     u32 val;
     const struct pciem_bar_info *bar = &v->bars[idx];
@@ -308,21 +309,11 @@ static u32 vph_read_bar_address(const struct pciem_root_complex *v, u32 idx)
     return 0;
 }
 
-static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
+static int pciem_conf_read_impl(struct pciem_root_complex *v, int where, int size, u32 *value)
 {
-    struct pciem_root_complex *v;
     u32 val = ~0U;
 
-#ifdef CONFIG_X86
-    struct pci_sysdata *sd = bus->sysdata;
-    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
-    v = priv->v;
-#else
-    struct pciem_host_bridge_priv *priv = bus->sysdata;
-    v = priv->v;
-#endif
-
-    if (!v || devfn != 0)
+    if (!v)
     {
         *value = ~0U;
         return PCIBIOS_DEVICE_NOT_FOUND;
@@ -344,7 +335,7 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, i
         size == 4)
     {
         int idx = (where - PCI_BASE_ADDRESS_0) / 4;
-        *value = vph_read_bar_address(v, idx);
+        *value = pciem_read_bar_address(v, idx);
         return PCIBIOS_SUCCESSFUL;
     }
 
@@ -373,7 +364,7 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, i
     return PCIBIOS_SUCCESSFUL;
 }
 
-static int vph_write_bar_address(struct pciem_root_complex *v, u32 idx, u32 value)
+static int pciem_write_bar_address(struct pciem_root_complex *v, u32 idx, u32 value)
 {
     struct pciem_bar_info *bar = &v->bars[idx];
     struct pciem_bar_info *prev = idx > 0 && (idx % 2) == 1
@@ -408,19 +399,8 @@ static int vph_write_bar_address(struct pciem_root_complex *v, u32 idx, u32 valu
     return PCIBIOS_FUNC_NOT_SUPPORTED;
 }
 
-static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
+static int pciem_conf_write_impl(struct pciem_root_complex *v, int where, int size, u32 value)
 {
-    struct pciem_root_complex *v;
-
-#ifdef CONFIG_X86
-    struct pci_sysdata *sd = bus->sysdata;
-    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
-    v = priv->v;
-#else
-    struct pciem_host_bridge_priv *priv = bus->sysdata;
-    v = priv->v;
-#endif
-
     if (!v)
     {
         return PCIBIOS_DEVICE_NOT_FOUND;
@@ -441,7 +421,7 @@ static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, 
         size == 4)
     {
         int idx = (where - PCI_BASE_ADDRESS_0) / 4;
-        return vph_write_bar_address(v, idx, value);
+        return pciem_write_bar_address(v, idx, value);
     }
 
     if (where == PCI_ROM_ADDRESS)
@@ -464,10 +444,144 @@ static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, 
     return PCIBIOS_SUCCESSFUL;
 }
 
+static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
+{
+    struct pciem_root_complex *v;
+
+#ifdef CONFIG_X86
+    struct pci_sysdata *sd = bus->sysdata;
+    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
+    v = priv->v;
+#else
+    struct pciem_host_bridge_priv *priv = bus->sysdata;
+    v = priv->v;
+#endif
+
+    if (devfn != 0) {
+        *value = ~0U;
+        return PCIBIOS_DEVICE_NOT_FOUND;
+    }
+
+    return pciem_conf_read_impl(v, where, size, value);
+}
+
+static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
+{
+    struct pciem_root_complex *v;
+
+#ifdef CONFIG_X86
+    struct pci_sysdata *sd = bus->sysdata;
+    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
+    v = priv->v;
+#else
+    struct pciem_host_bridge_priv *priv = bus->sysdata;
+    v = priv->v;
+#endif
+
+    if (devfn != 0) return PCIBIOS_DEVICE_NOT_FOUND;
+    return pciem_conf_write_impl(v, where, size, value);
+}
+
 static struct pci_ops vph_pci_ops = {
     .read = vph_read_config,
     .write = vph_write_config,
 };
+
+static int proxy_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
+{
+    if (!bus || !bus->ops)
+        return PCIBIOS_DEVICE_NOT_FOUND;
+
+    struct pciem_root_complex *v = container_of(bus->ops, struct pciem_root_complex,
+                                                 mode_state.hijack.proxy_ops);
+
+    if (unlikely(bus->ops != &v->mode_state.hijack.proxy_ops)) {
+        pr_warn_once("proxy_read_config called with unexpected ops pointer\n");
+        return v->mode_state.hijack.original_ops->read(bus, devfn, where, size, value);
+    }
+
+    if (bus->number == v->mode_state.hijack.target_bus->number &&
+        PCI_SLOT(devfn) == v->mode_state.hijack.hijacked_slot) {
+
+        /* FIXME: Function 0 for now */
+        if (PCI_FUNC(devfn) > 0) {
+            *value = ~0U;
+            return PCIBIOS_DEVICE_NOT_FOUND;
+        }
+        return pciem_conf_read_impl(v, where, size, value);
+    }
+
+    return v->mode_state.hijack.original_ops->read(bus, devfn, where, size, value);
+}
+
+static int proxy_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
+{
+    if (!bus || !bus->ops)
+        return PCIBIOS_DEVICE_NOT_FOUND;
+
+    struct pciem_root_complex *v = container_of(bus->ops, struct pciem_root_complex,
+                                                 mode_state.hijack.proxy_ops);
+
+    if (unlikely(bus->ops != &v->mode_state.hijack.proxy_ops)) {
+        pr_warn_once("proxy_write_config called with unexpected ops pointer\n");
+        return v->mode_state.hijack.original_ops->write(bus, devfn, where, size, value);
+    }
+
+    if (bus->number == v->mode_state.hijack.target_bus->number &&
+        PCI_SLOT(devfn) == v->mode_state.hijack.hijacked_slot) {
+
+        if (PCI_FUNC(devfn) > 0) return PCIBIOS_DEVICE_NOT_FOUND;
+        return pciem_conf_write_impl(v, where, size, value);
+    }
+
+    return v->mode_state.hijack.original_ops->write(bus, devfn, where, size, value);
+}
+
+static struct pci_bus *pciem_find_suitable_root_bus(void)
+{
+    struct pci_bus *bus = NULL;
+    struct pci_dev *pdev = NULL;
+
+    bus = pci_find_bus(0, 0);
+    if (bus) return bus;
+
+    while ((pdev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, pdev)) != NULL) {
+        if (pdev->bus && !pdev->bus->parent) {
+            bus = pdev->bus;
+            pci_dev_put(pdev);
+            return bus;
+        }
+    }
+    return NULL;
+}
+
+static int pciem_find_free_slot(struct pci_bus *bus)
+{
+    int slot;
+    u32 vendor, class;
+
+    if (!bus) return -ENODEV;
+
+    for (slot = 1; slot < 32; slot++) {
+        if (pci_bus_read_config_dword(bus, PCI_DEVFN(slot, 0), PCI_VENDOR_ID, &vendor))
+            continue;
+
+        if (vendor == 0xffffffff || vendor == 0x00000000) {
+            if (pci_bus_read_config_dword(bus, PCI_DEVFN(slot, 0), PCI_CLASS_REVISION, &class) == 0) {
+                class >>= 8;
+
+                if ((class >> 8) == PCI_BASE_CLASS_BRIDGE)
+                    continue;
+            }
+
+            pci_bus_read_config_dword(bus, PCI_DEVFN(slot, 1), PCI_VENDOR_ID, &vendor);
+
+            if (vendor == 0xffffffff || vendor == 0x00000000)
+                return slot;
+        }
+    }
+    return -ENOSPC;
+}
 
 static struct resource *
 pciem_find_iomem_region(struct resource *r, resource_size_t start,
@@ -503,13 +617,158 @@ next:
     return NULL;
 }
 
+static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct list_head *resources)
+{
+    int rc, busnr = 1, domain = 0;
+    struct pci_host_bridge *bridge;
+    struct pciem_host_bridge_priv *priv;
+
+    while (pci_find_bus(domain, busnr)) {
+        busnr++;
+        if (busnr > 255) {
+            pr_err("init: No free bus number available\n");
+            return -EBUSY;
+        }
+    }
+
+    bridge = pci_alloc_host_bridge(sizeof(*priv));
+    if (!bridge)
+        return -ENOMEM;
+
+    priv = pci_host_bridge_priv(bridge);
+    priv->v = v;
+
+    pciem_fixup_bridge_domain(bridge, priv, domain);
+
+    bridge->dev.parent = &v->shared_bridge_pdev->dev;
+    bridge->busnr = busnr;
+    bridge->ops = &vph_pci_ops;
+    list_splice_init(resources, &bridge->windows);
+
+    rc = pci_host_probe(bridge);
+    if (rc < 0) {
+        pr_err("init: pci_host_probe failed: %d\n", rc);
+        pci_free_host_bridge(bridge);
+        return -ENODEV;
+    }
+
+    v->root_bus = bridge->bus;
+    if (!v->root_bus) {
+        pr_err("init: Failed to create root bus\n");
+        return -ENODEV;
+    }
+
+    pci_bus_add_devices(v->root_bus);
+    pciem_bus_init_resources(v);
+
+    v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
+    if (!v->pciem_pdev) {
+        pr_err("init: Failed to find emulated device\n");
+        return -ENODEV;
+    }
+
+    v->mode_state.virtual_root.bridge = bridge;
+    v->mode_state.virtual_root.assigned_domain = domain;
+    v->mode_state.virtual_root.assigned_busnr = busnr;
+
+    pr_info("init: Virtual root mode - domain %d, bus %d\n", domain, busnr);
+    return 0;
+}
+
+static int pciem_init_attach_to_host_mode(struct pciem_root_complex *v)
+{
+    struct pci_bus *target_bus;
+    struct pci_dev *dev;
+    int slot, i;
+
+    target_bus = pciem_find_suitable_root_bus();
+    if (!target_bus) {
+        pr_err("init: No suitable root bus found (paravirt environment?)\n");
+        pr_err("init: Try using PCIEM_CREATE_FLAG_BUS_MODE_VIRTUAL instead\n");
+        return -ENODEV;
+    }
+
+    pr_info("init: Targeting bus %04x:%02x for device injection\n",
+            pci_domain_nr(target_bus), target_bus->number);
+
+    slot = pciem_find_free_slot(target_bus);
+    if (slot < 0) {
+        pr_err("init: No free slots on target bus\n");
+        return -ENOSPC;
+    }
+
+    pr_info("init: Injecting device at slot %02x on bus %04x:%02x\n",
+            slot, pci_domain_nr(target_bus), target_bus->number);
+
+    v->mode_state.hijack.target_bus = target_bus;
+    v->mode_state.hijack.hijacked_slot = slot;
+    v->mode_state.hijack.original_ops = target_bus->ops;
+
+    v->mode_state.hijack.proxy_ops = *target_bus->ops;
+    v->mode_state.hijack.proxy_ops.read = proxy_read_config;
+    v->mode_state.hijack.proxy_ops.write = proxy_write_config;
+
+    for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+        struct pciem_bar_info *bar = &v->bars[i];
+        if (bar->size == 0) continue;
+        if (i > 0 && (i % 2 == 1) && (v->bars[i - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
+            continue;
+
+        bar->base_addr_val = (u32)(bar->phys_addr & 0xFFFFFFFF);
+        if (bar->flags & PCI_BASE_ADDRESS_MEM_TYPE_64 && i+1 < PCI_STD_NUM_BARS) {
+            v->bars[i+1].base_addr_val = (u32)(bar->phys_addr >> 32);
+        }
+    }
+
+    /* FIXME: How usual would be for config space changes after system is booted? */
+    pci_lock_rescan_remove();
+    WRITE_ONCE(target_bus->ops, &v->mode_state.hijack.proxy_ops);
+    /* FIXME: Are memory barriers needed here? */
+    smp_mb();
+    dev = pci_scan_single_device(target_bus, PCI_DEVFN(slot, 0));
+    pci_unlock_rescan_remove();
+
+    if (!dev) {
+        pr_err("init: Scan failed to create device\n");
+        WRITE_ONCE(target_bus->ops, v->mode_state.hijack.original_ops);
+        return -ENODEV;
+    }
+
+    pr_info("init: Setting up device resources\n");
+    for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+        struct pciem_bar_info *bar = &v->bars[i];
+
+        if (bar->size == 0)
+            continue;
+
+        if (i > 0 && (i % 2 == 1) &&
+            (v->bars[i - 1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
+            continue;
+
+        if (bar->allocated_res) {
+            dev->resource[i] = *bar->allocated_res;
+            dev->resource[i].name = pci_name(dev);
+            dev->resource[i].flags |= IORESOURCE_PCI_FIXED | IORESOURCE_BUSY;
+            bar->res = &dev->resource[i];
+
+            pr_info("init: BAR%d assigned: %pR\n", i, &dev->resource[i]);
+        }
+    }
+
+    pci_bus_add_device(dev);
+
+    v->pciem_pdev = dev;
+    v->root_bus = target_bus;
+
+    pr_info("init: Attach-to-host mode active: %s\n", pci_name(dev));
+    return 0;
+}
+
 int pciem_complete_init(struct pciem_root_complex *v)
 {
     int rc = 0;
     struct resource *mem_res = NULL;
     LIST_HEAD(resources);
-    int busnr = 1;
-    int domain = 0;
     u32 i;
 
     struct platform_device_info pdevinfo = {
@@ -616,79 +875,52 @@ int pciem_complete_init(struct pciem_root_complex *v)
     if (rc)
         goto fail_res_list;
 
-    while (pci_find_bus(domain, busnr))
-    {
-        busnr++;
-        if (busnr > 255)
-        {
-            pr_err("init: No free bus number available\n");
-            rc = -EBUSY;
-            goto fail_res_list;
-        }
-    }
+    switch (v->bus_mode) {
+    case PCIEM_BUS_MODE_VIRTUAL_ROOT:
+        pr_info("init: Initializing in VIRTUAL_ROOT mode\n");
+        rc = pciem_init_virtual_root_mode(v, &resources);
+        break;
 
-    struct pci_host_bridge *bridge;
-    struct pciem_host_bridge_priv *priv;
+    case PCIEM_BUS_MODE_ATTACH_TO_HOST:
+        pr_info("init: Initializing in ATTACH_TO_HOST mode\n");
+        rc = pciem_init_attach_to_host_mode(v);
+        resource_list_free(&resources);
+        break;
 
-    bridge = pci_alloc_host_bridge(sizeof(*priv));
-    if (!bridge) {
-        rc = -ENOMEM;
+    default:
+        pr_err("init: Unknown bus mode %d\n", v->bus_mode);
+        rc = -EINVAL;
         goto fail_res_list;
     }
 
-    priv = pci_host_bridge_priv(bridge);
-    priv->v = v;
+    if (rc)
+        goto fail_device;
 
-    pciem_fixup_bridge_domain(bridge, priv, domain);
+    pr_info("init: Device ready (mode: %s)\n",
+            v->bus_mode == PCIEM_BUS_MODE_VIRTUAL_ROOT ? "virtual-root" : "attach-to-host");
 
-    bridge->dev.parent = &v->shared_bridge_pdev->dev;
-    bridge->busnr = busnr;
-    bridge->ops = &vph_pci_ops;
-    list_splice_init(&resources, &bridge->windows);
-
-    rc = pci_host_probe(bridge);
-
-    if (rc < 0)
-    {
-        pr_err("init: pci_host_probe failed: %d\n", rc);
-        pci_free_host_bridge(bridge);
-        rc = -ENODEV;
-        goto fail_res_list;
-    }
-
-    v->root_bus = bridge->bus;
-
-    if (!v->root_bus)
-    {
-        pr_err("init: pci_scan_bus failed");
-        rc = -ENODEV;
-        goto fail_res_list;
-    }
-
-    pci_bus_add_devices(v->root_bus);
-
-    pciem_bus_init_resources(v);
-
-    v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
-    if (!v->pciem_pdev)
-    {
-        pr_err("init: failed to find ProtoPCIem pci_dev");
-        rc = -ENODEV;
-        goto fail_map;
-    }
-
-    pr_info("init: pciem instance ready");
     return 0;
 
-fail_map:
-    if (v->pciem_pdev)
-    {
-        pci_dev_put(v->pciem_pdev);
+fail_device:
+    if (v->pciem_pdev) {
+        if (v->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
+            pci_stop_and_remove_bus_device(v->pciem_pdev);
+        } else {
+            pci_dev_put(v->pciem_pdev);
+        }
         v->pciem_pdev = NULL;
     }
-    if (v->root_bus)
-    {
+    if (v->bus_mode == PCIEM_BUS_MODE_VIRTUAL_ROOT && v->root_bus) {
         pci_remove_root_bus(v->root_bus);
+        v->root_bus = NULL;
+    } else if (v->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
+        if (v->mode_state.hijack.target_bus && v->mode_state.hijack.original_ops) {
+            pci_lock_rescan_remove();
+            WRITE_ONCE(v->mode_state.hijack.target_bus->ops,
+                      v->mode_state.hijack.original_ops);
+            smp_mb();
+            pci_unlock_rescan_remove();
+        }
     }
 fail_res_list:
     resource_list_free(&resources);
@@ -709,13 +941,29 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
 
     if (v->pciem_pdev)
     {
-        pci_dev_put(v->pciem_pdev);
+        if (v->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
+            pci_stop_and_remove_bus_device(v->pciem_pdev);
+        } else {
+            pci_dev_put(v->pciem_pdev);
+        }
         v->pciem_pdev = NULL;
     }
 
     if (v->root_bus)
     {
-        pci_remove_root_bus(v->root_bus);
+        if (v->bus_mode == PCIEM_BUS_MODE_VIRTUAL_ROOT) {
+            pci_remove_root_bus(v->root_bus);
+        } else if (v->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
+            if (v->mode_state.hijack.original_ops) {
+                pci_lock_rescan_remove();
+                WRITE_ONCE(v->mode_state.hijack.target_bus->ops,
+                        v->mode_state.hijack.original_ops);
+                smp_mb();
+                pci_unlock_rescan_remove();
+                synchronize_rcu();
+                pr_info("exit: Restored original bus ops\n");
+            }
+        }
         v->root_bus = NULL;
     }
 

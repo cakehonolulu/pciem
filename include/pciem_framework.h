@@ -34,6 +34,11 @@ struct pciem_host_bridge_priv {
 
 #include "pciem_p2p.h"
 
+enum pciem_bus_mode {
+    PCIEM_BUS_MODE_VIRTUAL_ROOT = 0,
+    PCIEM_BUS_MODE_ATTACH_TO_HOST = 1,
+};
+
 struct pciem_bar_info
 {
     resource_size_t size;
@@ -57,6 +62,13 @@ struct pciem_bar_info
     spinlock_t vma_lock;
 };
 
+struct pciem_hijack_state {
+    struct pci_bus *target_bus;
+    int hijacked_slot;
+    struct pci_ops *original_ops;
+    struct pci_ops proxy_ops;
+};
+
 struct pciem_root_complex
 {
     struct list_head list_node;
@@ -67,6 +79,18 @@ struct pciem_root_complex
     struct pci_dev *pciem_pdev;
     struct pci_bus *root_bus;
     u8 cfg[256];
+
+    enum pciem_bus_mode bus_mode;
+
+    union {
+        struct {
+            struct pci_host_bridge *bridge;
+            int assigned_domain;
+            int assigned_busnr;
+        } virtual_root;
+
+        struct pciem_hijack_state hijack;
+    } mode_state;
 
     struct pciem_bar_info bars[PCI_STD_NUM_BARS];
     rwlock_t bars_lock;

@@ -471,8 +471,14 @@ static int pciem_device_mmap(struct file *file, struct vm_area_struct *vma)
 
 static long pciem_ioctl_create_device(struct pciem_userspace_state *us, struct pciem_create_device __user *arg)
 {
+    struct pciem_create_device cfg;
+    enum pciem_bus_mode mode;
+
     if (us->rc)
         return -EBUSY;
+
+    if (copy_from_user(&cfg, arg, sizeof(cfg)))
+        return -EFAULT;
 
     us->rc = pciem_alloc_root_complex();
     if (IS_ERR(us->rc))
@@ -481,6 +487,23 @@ static long pciem_ioctl_create_device(struct pciem_userspace_state *us, struct p
         us->rc = NULL;
         return ret;
     }
+
+    switch (cfg.flags & PCIEM_CREATE_FLAG_BUS_MODE_MASK) {
+    case PCIEM_CREATE_FLAG_BUS_MODE_VIRTUAL:
+        mode = PCIEM_BUS_MODE_VIRTUAL_ROOT;
+        pr_info("Userspace requested VIRTUAL_ROOT mode\n");
+        break;
+    case PCIEM_CREATE_FLAG_BUS_MODE_ATTACH:
+        mode = PCIEM_BUS_MODE_ATTACH_TO_HOST;
+        pr_info("Userspace requested ATTACH_TO_HOST mode\n");
+        break;
+    default:
+        mode = PCIEM_BUS_MODE_VIRTUAL_ROOT;
+        pr_info("Using default VIRTUAL_ROOT mode\n");
+        break;
+    }
+
+    us->rc->bus_mode = mode;
 
     pciem_init_cap_manager(us->rc);
 
