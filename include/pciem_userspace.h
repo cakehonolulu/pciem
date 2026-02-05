@@ -14,6 +14,8 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/poll.h>
+#include <linux/pci_regs.h>
+#include "trace/smptrace.h"
 #else
 #include <stdatomic.h>
 #include <stdint.h>
@@ -152,14 +154,6 @@ struct pciem_bar_info_query
     uint32_t flags;
 };
 
-struct pciem_watchpoint_config
-{
-    uint32_t bar_index;
-    uint32_t offset;
-    uint32_t width;
-    uint32_t flags;
-};
-
 #define PCIEM_WP_FLAG_BAR_KPROBES  (1 << 0)
 #define PCIEM_WP_FLAG_BAR_MANUAL   (1 << 1)
 
@@ -192,6 +186,28 @@ struct pciem_dma_indirect
     uint32_t reserved;
 };
 
+/* Notify userspace on BAR reads */
+#define PCIEM_TRACE_READS         (1 << 0)
+
+/* Notify userspace on BAR writes */
+#define PCIEM_TRACE_WRITES        (1 << 1)
+/*
+ * Normally, when PCIem detects a write to a BAR, it emulates that
+ * write on its shadow mapping of the BAR, allowing future reads to
+ * observe that write. If this flag is set, writes will still be
+ * notified (if requested), but PCIem will not write to the BAR.
+ * Userspace must update the BAR through its own mapping if it wants
+ * the device driver to see updates to the BAR.
+ */
+#define PCIEM_TRACE_STOP_WRITES   (1 << 2)
+
+/* For PCIEM_IOCTL_TRACE_BAR */
+struct pciem_trace_bar
+{
+    uint32_t bar_index;
+    uint32_t flags;
+};
+
 #define PCIEM_IOCTL_MAGIC 0xAF
 
 #define PCIEM_IOCTL_CREATE_DEVICE _IOWR(PCIEM_IOCTL_MAGIC, 10, struct pciem_create_device)
@@ -204,10 +220,10 @@ struct pciem_dma_indirect
 #define PCIEM_IOCTL_DMA_ATOMIC _IOWR(PCIEM_IOCTL_MAGIC, 17, struct pciem_dma_atomic)
 #define PCIEM_IOCTL_P2P _IOWR(PCIEM_IOCTL_MAGIC, 18, struct pciem_p2p_op_user)
 #define PCIEM_IOCTL_GET_BAR_INFO _IOWR(PCIEM_IOCTL_MAGIC, 19, struct pciem_bar_info_query)
-#define PCIEM_IOCTL_SET_WATCHPOINT _IOW(PCIEM_IOCTL_MAGIC, 20, struct pciem_watchpoint_config)
 #define PCIEM_IOCTL_SET_EVENTFD _IOW(PCIEM_IOCTL_MAGIC, 21, struct pciem_eventfd_config)
 #define PCIEM_IOCTL_SET_IRQFD _IOW(PCIEM_IOCTL_MAGIC, 22, struct pciem_irqfd_config)
 #define PCIEM_IOCTL_DMA_INDIRECT _IOWR(PCIEM_IOCTL_MAGIC, 24, struct pciem_dma_indirect)
+#define PCIEM_IOCTL_TRACE_BAR _IOWR(PCIEM_IOCTL_MAGIC, 25, struct pciem_trace_bar)
 
 #define PCIEM_RING_SIZE 256
 #define PCIEM_MAX_IRQFDS 32
@@ -222,17 +238,6 @@ struct pciem_shared_ring
 };
 
 #ifdef __KERNEL__
-
-#define MAX_WATCHPOINTS 8
-
-struct pciem_watchpoint_info
-{
-    bool active;
-    uint32_t bar_index;
-    uint32_t offset;
-    uint32_t width;
-    struct perf_event * __percpu * perf_bp;
-};
 
 struct pciem_irqfd
 {
@@ -254,6 +259,11 @@ struct pciem_irqfds {
     struct list_head items;
 };
 
+struct pciem_tracer {
+    struct pciem_userspace_state *us;
+    struct smptrace_ctx ctx;
+};
+
 struct pciem_userspace_state
 {
     struct pciem_root_complex *rc;
@@ -268,15 +278,13 @@ struct pciem_userspace_state
     struct pciem_shared_ring *shared_ring;
     spinlock_t shared_ring_lock;
 
-    struct pciem_watchpoint_info watchpoints[MAX_WATCHPOINTS];
-    spinlock_t watchpoint_lock;
-
     struct eventfd_ctx *eventfd;
     spinlock_t eventfd_lock;
 
     struct pciem_irqfds irqfds;
 
-    bool bar_tracking_disabled;
+    /* BAR read/write trackers */
+    struct pciem_tracer tracers[PCI_STD_NUM_BARS];
 };
 
 struct pciem_pending_request

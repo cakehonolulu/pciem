@@ -6,8 +6,13 @@ pciem-objs := framework/pciem_framework.o \
               framework/pciem_capabilities.o \
               framework/pciem_p2p.o \
               framework/pciem_dma.o \
-			  framework/pciem_bar.o \
 			  framework/pciem_userspace.o
+
+pciem-objs += trace/smptrace_main.o \
+              trace/arch/x86/lib/insn.o \
+              trace/arch/x86/lib/insn-eval.o \
+              trace/arch/x86/lib/inat.o
+ccflags-y += -I$(src)/trace/arch/x86/include/asm
 
 obj-m += pciem.o
 

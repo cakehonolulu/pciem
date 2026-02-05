@@ -34,15 +34,6 @@ struct pciem_host_bridge_priv {
 
 #include "pciem_p2p.h"
 
-enum pciem_map_type
-{
-    PCIEM_MAP_NONE = 0,
-    PCIEM_MAP_MEMREMAP,
-    PCIEM_MAP_IOREMAP_CACHE,
-    PCIEM_MAP_IOREMAP,
-    PCIEM_MAP_IOREMAP_WC,
-};
-
 struct pciem_bar_info
 {
     resource_size_t size;
@@ -54,10 +45,8 @@ struct pciem_bar_info
     struct resource *res;
 
     struct resource *allocated_res;
-    void __iomem *virt_addr;
     struct page *pages;
     phys_addr_t phys_addr;
-    enum pciem_map_type map_type;
     unsigned int order;
     bool mem_owned_by_framework;
 

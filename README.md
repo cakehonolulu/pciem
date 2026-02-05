@@ -74,7 +74,7 @@ graph LR
 ## Current Features
 
 - **BAR creation**: Programmatically create and monitor BAR regions.
-- **Watchpoints**: Access detection using CPU watchpoints to avoid polling for accesses.
+- **BAR MMIO tracing**: MMIO read/write detection and notification to avoid polling for accesses.
 - **Interrupts support**: Legacy/MSI/MSI-X interrupt injection.
 - **PCI capability framework**: PCI capabilities system (Linked-list underneath).
 - **DMA system**: IOMMU-aware DMA accesses from/to userspace device.

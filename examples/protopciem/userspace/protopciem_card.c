@@ -360,19 +360,6 @@ static void process_command_local(void)
     inject_irq(0);
 }
 
-static int setup_watchpoints(void)
-{
-    struct pciem_watchpoint_config wp;
-    wp.bar_index = 0;
-    wp.offset = REG_CMD;
-    wp.width = 4;
-    wp.flags = 1;
-    int ret = ioctl(dev_state.pciem_fd, PCIEM_IOCTL_SET_WATCHPOINT, &wp);
-    if (ret < 0 && errno == EAGAIN)
-        return -EAGAIN;
-    return ret;
-}
-
 static int setup_eventfd(void)
 {
     struct pciem_eventfd_config efd_cfg;
@@ -487,6 +474,10 @@ static int register_device(struct device_state *st)
             .has_masking = 1,
         },
     };
+    struct pciem_trace_bar trace = {
+        .bar_index = 0,
+        .flags = PCIEM_TRACE_WRITES,
+    };
 
     st->pciem_fd = open("/dev/pciem", O_RDWR);
     if (st->pciem_fd < 0) {
@@ -497,6 +488,7 @@ static int register_device(struct device_state *st)
     ioctl(st->pciem_fd, PCIEM_IOCTL_CREATE_DEVICE, &create);
     ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar0);
     ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_BAR, &bar2);
+    ioctl(st->pciem_fd, PCIEM_IOCTL_TRACE_BAR, &trace);
     ioctl(st->pciem_fd, PCIEM_IOCTL_ADD_CAPABILITY, &cap);
     ioctl(st->pciem_fd, PCIEM_IOCTL_SET_CONFIG, &cfg);
 
@@ -645,26 +637,6 @@ int main(void)
     else
     {
         printf("[X] QEMU socket not found, running internal emulation...\n");
-    }
-
-    {
-        int retry_count = 0;
-        while (dev_running(&dev_state) && retry_count < 2000)
-        {
-            int ret = setup_watchpoints();
-            if (ret == 0)
-            {
-                printf("[\x1b[32m*\x1b[0m] Watchpoints enabled successfully\n");
-                break;
-            }
-            if (errno != EAGAIN)
-            {
-                printf("[!] Watchpoint setup failed: %s (continuing without watchpoints)\n", strerror(errno));
-                break;
-            }
-            retry_count++;
-            usleep(100000);
-        }
     }
 
     if (setup_eventfd() < 0)
