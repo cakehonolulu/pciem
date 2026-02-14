@@ -36,6 +36,19 @@ struct pciem_host_bridge_priv {
 
 #include "pciem_p2p.h"
 
+struct pciem_mempool {
+    phys_addr_t         base;
+    resource_size_t     total_size;
+    resource_size_t     next_offset;
+    spinlock_t          lock;
+    struct resource     *res;
+    bool                initialized;
+};
+
+extern struct pciem_mempool pciem_pool;
+
+phys_addr_t pciem_pool_alloc(resource_size_t size);
+
 enum pciem_bus_mode {
     PCIEM_BUS_MODE_VIRTUAL_ROOT = 0,
     PCIEM_BUS_MODE_ATTACH_TO_HOST = 1,

@@ -43,10 +43,10 @@
 #include "pciem_p2p.h"
 #include "pciem_userspace.h"
 
-static char *pciem_phys_regions = "";
-module_param(pciem_phys_regions, charp, 0444);
-MODULE_PARM_DESC(pciem_phys_regions,
-                 "Physical memory regions for BARs: bar0:0x1bf000000:0x10000,bar2:0x1bf010000:0x20000");
+static char *pciem_phys_region = "";
+module_param(pciem_phys_region, charp, 0444);
+MODULE_PARM_DESC(pciem_phys_region,
+    "Physical memory pool for BAR allocations: 0xADDR:0xSIZE");
 
 static char *p2p_regions = "";
 module_param(p2p_regions, charp, 0444);
@@ -72,47 +72,122 @@ static void pciem_fixup_bridge_domain(struct pci_host_bridge *bridge,
 #endif
 }
 
-static int parse_phys_regions(struct pciem_root_complex *v)
-{
-    char *str, *token, *cur;
-    u32 bar_num;
-    resource_size_t start, size;
+struct pciem_mempool pciem_pool;
+EXPORT_SYMBOL(pciem_pool);
 
-    if (!pciem_phys_regions || strlen(pciem_phys_regions) == 0)
-    {
+phys_addr_t pciem_pool_alloc(resource_size_t size)
+{
+    phys_addr_t addr;
+    resource_size_t aligned_offset;
+    unsigned long flags;
+
+    if (!pciem_pool.initialized) {
+        pr_err("pool: No physical memory pool configured.\n");
+        pr_err("pool: Pass pciem_phys_region=0xADDR:0xSIZE at insmod.\n");
         return 0;
     }
 
-    str = kstrdup(pciem_phys_regions, GFP_KERNEL);
-    if (!str)
-    {
+    if (!size || (size & (size - 1))) {
+        pr_err("pool: Allocation size 0x%llx is not a power of 2\n", (u64)size);
+        return 0;
+    }
+
+    spin_lock_irqsave(&pciem_pool.lock, flags);
+
+    aligned_offset = ALIGN(pciem_pool.next_offset, size);
+
+    if (aligned_offset + size > pciem_pool.total_size) {
+        spin_unlock_irqrestore(&pciem_pool.lock, flags);
+        pr_err("pool: Out of pool memory.\n");
+        return 0;
+    }
+
+    addr = pciem_pool.base + aligned_offset;
+    pciem_pool.next_offset = aligned_offset + size;
+
+    spin_unlock_irqrestore(&pciem_pool.lock, flags);
+
+    pr_info("pool: Allocated 0x%llx bytes at phys 0x%llx (pool offset 0x%llx)\n",
+            (u64)size, (u64)addr, (u64)aligned_offset);
+    return addr;
+}
+EXPORT_SYMBOL(pciem_pool_alloc);
+
+static int pciem_pool_init(void)
+{
+    phys_addr_t base;
+    resource_size_t size;
+    struct resource *res;
+
+    memset(&pciem_pool, 0, sizeof(pciem_pool));
+    spin_lock_init(&pciem_pool.lock);
+
+    if (!pciem_phys_region || !*pciem_phys_region) {
+        pr_info("pool: No pciem_phys_region specified\n");
+        return 0;
+    }
+
+    if (sscanf(pciem_phys_region, "0x%llx:0x%llx",
+               (unsigned long long *)&base,
+               (unsigned long long *)&size) != 2 &&
+        sscanf(pciem_phys_region, "%llx:%llx",
+               (unsigned long long *)&base,
+               (unsigned long long *)&size) != 2) {
+        pr_err("pool: Cannot parse pciem_phys_region=\"%s\"\n", pciem_phys_region);
+        return -EINVAL;
+    }
+
+    if (!size || (size & (size - 1))) {
+        pr_err("pool: Region size 0x%llx must be a power of 2\n", (u64)size);
+        return -EINVAL;
+    }
+
+    res = kzalloc(sizeof(*res), GFP_KERNEL);
+    if (!res)
         return -ENOMEM;
+
+    res->name = "PCIem BAR pool";
+    res->start = base;
+    res->end = base + size - 1;
+    res->flags = IORESOURCE_MEM;
+
+    if (insert_resource(&iomem_resource, res)) {
+        pr_err("pool: Failed to claim [0x%llx-0x%llx] in iomem\n",
+               (u64)base, (u64)(base + size - 1));
+        kfree(res);
+        return -EBUSY;
     }
 
-    cur = str;
-    while ((token = strsep(&cur, ",")) != NULL)
-    {
-        if (sscanf(token, "bar%u:0x%llx:0x%llx", &bar_num, &start, &size) == 3 ||
-            sscanf(token, "bar%u:%llx:%llx", &bar_num, &start, &size) == 3)
-        {
-            if (bar_num >= PCI_STD_NUM_BARS)
-            {
-                pr_warn("Invalid BAR number %u in phys_regions\n", bar_num);
-                continue;
-            }
+    pciem_pool.base = base;
+    pciem_pool.total_size = size;
+    pciem_pool.next_offset = 0;
+    pciem_pool.res = res;
+    pciem_pool.initialized = true;
 
-            v->bars[bar_num].carved_start = start;
-            v->bars[bar_num].carved_end = start + size - 1;
-            pr_info("Parsed BAR%u phys region: 0x%llx-0x%llx\n", bar_num, (u64)start, (u64)(start + size - 1));
-        }
-    }
-
-    kfree(str);
+    pr_info("pool: BAR pool ready [0x%llx – 0x%llx]\n",
+            (u64)base, (u64)(base + size - 1));
     return 0;
+}
+
+static void pciem_pool_exit(void)
+{
+    if (!pciem_pool.initialized)
+        return;
+
+    if (pciem_pool.res) {
+        release_resource(pciem_pool.res);
+        kfree(pciem_pool.res);
+        pciem_pool.res = NULL;
+    }
+
+    pciem_pool.initialized = false;
+    pr_info("pool: BAR pool released\n");
 }
 
 int pciem_register_bar(struct pciem_root_complex *v, u32 bar_num, resource_size_t size, u32 flags)
 {
+    phys_addr_t phys;
+
     if (bar_num >= PCI_STD_NUM_BARS)
         return -EINVAL;
 
@@ -131,9 +206,15 @@ int pciem_register_bar(struct pciem_root_complex *v, u32 bar_num, resource_size_
         return -EINVAL;
     }
 
+    phys = pciem_pool_alloc(size);
+    if (!phys)
+        return -ENOMEM;
+
     v->bars[bar_num].size = size;
     v->bars[bar_num].flags = flags;
     v->bars[bar_num].base_addr_val = 0;
+    v->bars[bar_num].carved_start = phys;
+    v->bars[bar_num].carved_end = phys + size - 1;
 
     pr_info("pciem: Registered BAR %u: size 0x%llx, flags 0x%x\n", bar_num, (u64)size, flags);
 
@@ -199,9 +280,16 @@ static void pciem_bus_init_resources(struct pciem_root_complex *v)
         bar = &v->bars[i];
         if (bar->size > 0 && bar->allocated_res)
         {
-            dev->resource[i] = *bar->allocated_res;
-            dev->resource[i].flags |= IORESOURCE_BUSY;
+            dev->resource[i].start = bar->phys_addr;
+            dev->resource[i].end = bar->phys_addr + bar->size - 1;
+            dev->resource[i].flags |= IORESOURCE_BUSY | IORESOURCE_PCI_FIXED;
             bar->res = &dev->resource[i];
+
+            bar->base_addr_val = (u32)(bar->phys_addr & 0xFFFFFFFF);
+            if ((bar->flags & PCI_BASE_ADDRESS_MEM_TYPE_64) &&
+                (i + 1 < PCI_STD_NUM_BARS)) {
+                v->bars[i + 1].base_addr_val = (u32)(bar->phys_addr >> 32);
+            }
         }
     }
 
@@ -592,38 +680,22 @@ static int pciem_find_free_slot(struct pci_bus *bus)
     return -ENOSPC;
 }
 
-static struct resource *
-pciem_find_iomem_region(struct resource *r, resource_size_t start,
-                        resource_size_t end, struct resource **parent)
+static void pciem_activation_work_func(struct work_struct *work)
 {
-    struct resource *child;
+    struct pciem_root_complex *v = 
+        container_of(work, struct pciem_root_complex, activation_work);
 
-    BUG_ON(start > end);
+    pr_info("activate: adding device to subsystem now\n");
 
-    while (r)
-    {
-        if (!(r->flags & IORESOURCE_MEM))
-            goto next;
-
-        /* Cannot fit in this region */
-        if (start < r->start || end >= r->end)
-            goto next;
-
-        /* Return early if exact match */
-        if (r->start == start && r->end == end)
-            return r;
-
-        /* Attempt to find in child node */
-        *parent = r;
-        child = pciem_find_iomem_region(r->child, start, end, parent);
-        if (child)
-            return child;
-
-next:
-        r = r->sibling;
+    if (v->bus_mode == PCIEM_BUS_MODE_VIRTUAL_ROOT) {
+        if (v->root_bus)
+            pci_bus_add_devices(v->root_bus);
+    } else if (v->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
+        if (v->pciem_pdev)
+            pci_bus_add_device(v->pciem_pdev);
     }
-
-    return NULL;
+    
+    v->activated = true;
 }
 
 static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct list_head *resources)
@@ -654,9 +726,9 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct lis
     bridge->ops = &vph_pci_ops;
     list_splice_init(resources, &bridge->windows);
 
-    rc = pci_host_probe(bridge);
+    rc = pci_scan_root_bus_bridge(bridge);
     if (rc < 0) {
-        pr_err("init: pci_host_probe failed: %d\n", rc);
+        pr_err("init: pci_scan_root_bus_bridge failed: %d\n", rc);
         pci_free_host_bridge(bridge);
         return -ENODEV;
     }
@@ -667,8 +739,8 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct lis
         return -ENODEV;
     }
 
-    pci_bus_add_devices(v->root_bus);
     pciem_bus_init_resources(v);
+    pci_bus_assign_resources(v->root_bus);
 
     v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
     if (!v->pciem_pdev) {
@@ -764,7 +836,6 @@ static int pciem_init_attach_to_host_mode(struct pciem_root_complex *v)
         }
     }
 
-    pci_bus_add_device(dev);
 
     v->pciem_pdev = dev;
     v->root_bus = target_bus;
@@ -806,7 +877,6 @@ int pciem_complete_init(struct pciem_root_complex *v)
         struct pciem_bar_info *prev = i > 0 && (i % 2) == 1
             ? &v->bars[i - 1]
             : NULL;
-        resource_size_t start, end;
 
         if (bar->size == 0)
             continue;
@@ -817,66 +887,44 @@ int pciem_complete_init(struct pciem_root_complex *v)
         bar->order = get_order(bar->size);
         pr_info("init: preparing BAR%u physical memory (%llu KB, order %u)", i, (u64)bar->size / 1024, bar->order);
 
-        if (!bar->carved_start || !bar->carved_end)
-            continue;
-
-        start = bar->carved_start;
-        end = bar->carved_end;
-
-        pr_info("init: BAR%u using pre-carved region [0x%llx-0x%llx]", i, (u64)start, (u64)end);
-
-        struct resource *found = NULL;
-        struct resource *parent = &iomem_resource;
-
-        found = pciem_find_iomem_region(iomem_resource.child, start, end, &parent);
-
-        /* Exact match */
-        if (found)
-        {
-            pr_info("init: BAR%u found existing iomem resource: %s [0x%llx-0x%llx]", i,
-                    found->name ? found->name : "<unnamed>", (u64)found->start, (u64)found->end);
-            bar->allocated_res = found;
-            bar->mem_owned_by_framework = false;
-            bar->phys_addr = start;
-            bar->pages = NULL;
+        if (!bar->carved_start) {
+            pr_err("init: BAR%u has no physical address assigned.\n", i);
+            rc = -ENOMEM;
+            goto fail_bars;
         }
-        else
-        {
-            mem_res = kzalloc(sizeof(*mem_res), GFP_KERNEL);
-            if (!mem_res)
-            {
-                rc = -ENOMEM;
-                goto fail_bars;
-            }
 
-            mem_res->name = kasprintf(GFP_KERNEL, "PCI BAR%u", i);
-            if (!mem_res->name)
-            {
-                kfree(mem_res);
-                rc = -ENOMEM;
-                goto fail_bars;
-            }
+        mem_res = kzalloc(sizeof(*mem_res), GFP_KERNEL);
+        if (!mem_res) {
+            rc = -ENOMEM;
+            goto fail_bars;
+        }
 
-            mem_res->start = start;
-            mem_res->end = end;
-            mem_res->flags = IORESOURCE_MEM;
+        mem_res->name = kasprintf(GFP_KERNEL, "PCI BAR%u", i);
+        if (!mem_res->name) {
+            kfree(mem_res);
+            rc = -ENOMEM;
+            goto fail_bars;
+        }
 
-            pr_info("init: BAR%u inserting into parent resource: %s [0x%llx-0x%llx]", i,
-                    parent->name ? parent->name : "<unnamed>", (u64)parent->start, (u64)parent->end);
-            if (request_resource(parent, mem_res))
-            {
-                pr_err("init: BAR%u failed to insert into parent resource", i);
-                kfree(mem_res->name);
-                kfree(mem_res);
-                rc = -EBUSY;
-                goto fail_bars;
-            }
+        mem_res->start = bar->carved_start;
+        mem_res->end = bar->carved_end;
+        mem_res->flags = IORESOURCE_MEM;
 
-            bar->allocated_res = mem_res;
-            bar->mem_owned_by_framework = true;
-            bar->phys_addr = start;
-            bar->pages = NULL;
-            pr_info("init: BAR%u successfully reserved [0x%llx-0x%llx]", i, (u64)start, (u64)end);
+        if (request_resource(pciem_pool.res, mem_res)) {
+            kfree(mem_res->name);
+            kfree(mem_res);
+            rc = -EBUSY;
+            goto fail_bars;
+        }
+
+        bar->allocated_res = mem_res;
+        bar->mem_owned_by_framework = true;
+        bar->phys_addr = bar->carved_start;
+        bar->pages = NULL;
+        bar->base_addr_val = (u32)(bar->phys_addr & 0xFFFFFFFF);
+        if ((bar->flags & PCI_BASE_ADDRESS_MEM_TYPE_64) &&
+            (i + 1 < PCI_STD_NUM_BARS)) {
+            v->bars[i + 1].base_addr_val = (u32)(bar->phys_addr >> 32);
         }
     }
 
@@ -942,9 +990,21 @@ fail_pdev_null:
 }
 EXPORT_SYMBOL(pciem_complete_init);
 
+int pciem_start_device(struct pciem_root_complex *v)
+{
+    if (v->activated)
+        return -EALREADY;
+
+    schedule_work(&v->activation_work);
+    return 0;
+}
+EXPORT_SYMBOL(pciem_start_device);
+
 static void pciem_teardown_device(struct pciem_root_complex *v)
 {
     pr_info("exit: tearing down pciem device\n");
+
+    cancel_work_sync(&v->activation_work);
 
     irq_work_sync(&v->msi_irq_work);
 
@@ -996,6 +1056,9 @@ static int __init pciem_init(void)
     int ret;
     pr_info("init: pciem framework loading\n");
 
+    ret = pciem_pool_init();
+    if (ret) return ret;
+
     ret = pciem_userspace_init();
     if (ret) {
         pr_err("init: Failed to initialize userspace support: %d\n", ret);
@@ -1020,6 +1083,7 @@ static int __init pciem_init(void)
 fail_misc:
     pciem_userspace_cleanup();
 fail_userspace:
+    pciem_pool_exit();
     return ret;
 }
 
@@ -1029,6 +1093,7 @@ static void __exit pciem_exit(void)
 
     misc_deregister(&pciem_dev);
     pciem_userspace_cleanup();
+    pciem_pool_exit();
     pr_info("exit: Unregistered /dev/pciem\n");
     pr_info("exit: pciem framework done");
 }
@@ -1036,7 +1101,6 @@ static void __exit pciem_exit(void)
 struct pciem_root_complex *pciem_alloc_root_complex(void)
 {
     struct pciem_root_complex *v;
-    int ret;
 
     v = kzalloc(sizeof(*v), GFP_KERNEL);
     if (!v)
@@ -1047,14 +1111,9 @@ struct pciem_root_complex *pciem_alloc_root_complex(void)
 
     /* Essential initialization that must happen */
     init_irq_work(&v->msi_irq_work, pciem_msi_irq_work_func);
+    INIT_WORK(&v->activation_work, pciem_activation_work_func);
     v->pending_msi_irq = 0;
     memset(v->bars, 0, sizeof(v->bars));
-
-    ret = parse_phys_regions(v);
-    if (ret) {
-        kfree(v);
-        return ERR_PTR(ret);
-    }
 
     pr_info("Allocated pciem root complex\n");
     return v;
