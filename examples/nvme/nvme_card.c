@@ -1437,6 +1437,9 @@ int main(void)
         exit(EXIT_FAILURE);
     }
 
+    if (ioctl(dev.fd, PCIEM_IOCTL_START, 0))
+        err(EXIT_FAILURE, "failed to start device");
+
     dev_event_loop(&dev);
     dev_destroy(&dev);
 

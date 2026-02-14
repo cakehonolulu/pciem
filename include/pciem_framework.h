@@ -19,6 +19,8 @@
 #include <linux/poll.h>
 #include <linux/wait.h>
 #include <linux/list.h>
+#include <linux/spinlock.h>
+#include <linux/workqueue.h>
 
 #ifdef CONFIG_X86
 #include <asm/pci.h>
@@ -106,11 +108,15 @@ struct pciem_root_complex
 
     struct pciem_p2p_manager *p2p_mgr;
 
+    struct work_struct activation_work;
+    bool activated;
+
     bool detaching;
 };
 
 void pciem_trigger_msi(struct pciem_root_complex *v, int vector);
 int pciem_complete_init(struct pciem_root_complex *v);
+int pciem_start_device(struct pciem_root_complex *v);
 int pciem_register_bar(struct pciem_root_complex *v, uint32_t bar_num, resource_size_t size, u32 flags);
 struct pciem_root_complex *pciem_alloc_root_complex(void);
 void pciem_free_root_complex(struct pciem_root_complex *v);

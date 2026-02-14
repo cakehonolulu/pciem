@@ -31,9 +31,11 @@
 #include <linux/sched.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/idr.h>
+#include <linux/workqueue.h>
 
 #include "pciem_capabilities.h"
 #include "pciem_dma.h"

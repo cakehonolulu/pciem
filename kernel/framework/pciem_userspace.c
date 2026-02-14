@@ -660,6 +660,17 @@ static long pciem_ioctl_register(struct pciem_userspace_state *us)
     return fd;
 }
 
+static long pciem_ioctl_start(struct pciem_userspace_state *us)
+{
+    int ret;
+
+    ret = pciem_check_registered(us);
+    if (ret)
+        return ret;
+
+    return pciem_start_device(us->rc);
+}
+
 static long pciem_ioctl_inject_irq(struct pciem_userspace_state *us, struct pciem_irq_inject __user *arg)
 {
     struct pciem_irq_inject inject;
@@ -1247,6 +1258,9 @@ static long pciem_device_ioctl(struct file *file, unsigned int cmd, unsigned lon
 
     case PCIEM_IOCTL_REGISTER:
         return pciem_ioctl_register(us);
+
+    case PCIEM_IOCTL_START:
+        return pciem_ioctl_start(us);
 
     case PCIEM_IOCTL_INJECT_IRQ:
         return pciem_ioctl_inject_irq(us, (struct pciem_irq_inject __user *)arg);

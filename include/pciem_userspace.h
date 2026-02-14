@@ -228,6 +228,7 @@ struct pciem_trace_bar
 #define PCIEM_IOCTL_SET_IRQFD _IOW(PCIEM_IOCTL_MAGIC, 22, struct pciem_irqfd_config)
 #define PCIEM_IOCTL_DMA_INDIRECT _IOWR(PCIEM_IOCTL_MAGIC, 24, struct pciem_dma_indirect)
 #define PCIEM_IOCTL_TRACE_BAR _IOWR(PCIEM_IOCTL_MAGIC, 25, struct pciem_trace_bar)
+#define PCIEM_IOCTL_START _IO(PCIEM_IOCTL_MAGIC, 26)
 
 #define PCIEM_RING_SIZE 256
 #define PCIEM_MAX_IRQFDS 32
