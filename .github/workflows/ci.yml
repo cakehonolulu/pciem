@@ -109,3 +109,121 @@ jobs:
               KDIR=$(ls -d /usr/src/linux-obj/*/* | head -n1) &&
               make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
             '
+
+  qemu-test:
+    name: QEMU Test (x86_64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            flex \
+            bison \
+            libelf-dev \
+            linux-headers-$(uname -r) \
+            qemu-system-x86 \
+            busybox-static \
+            cpio
+
+      - name: Build
+        run: |
+          KDIR=$(ls -d /lib/modules/*/build | head -n1)
+          make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+
+      - name: Build initramfs
+        run: |
+          KVER=$(uname -r)
+
+          mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
+
+          cp /bin/busybox initramfs/bin/busybox
+          for cmd in sh ls lsmod insmod sleep cat echo mount dmesg; do
+            ln -s busybox initramfs/bin/$cmd
+          done
+
+          cp kernel/pciem.ko initramfs/lib/modules/
+
+          if [ -f examples/nvme/nvme_card ]; then
+            cp examples/nvme/nvme_card initramfs/bin/
+            ldd examples/nvme/nvme_card \
+              | grep -o '/[^ ]*' \
+              | while read lib; do
+                  [ -f "$lib" ] || continue
+                  mkdir -p "initramfs/$(dirname $lib)"
+                  cp "$lib" "initramfs/$lib"
+                done
+          fi
+
+          for mod in nvme-core.ko nvme.ko; do
+            src=$(find /lib/modules/$KVER -name "$mod" 2>/dev/null | head -n1)
+            [ -n "$src" ] && cp "$src" initramfs/lib/modules/
+          done
+
+          cat > initramfs/init << 'EOF'
+          #!/bin/sh
+          mount -t proc  none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev 2>/dev/null || true
+
+          if insmod /lib/modules/pciem.ko \
+              pciem_phys_region=0x80000000:0x200000; then
+            echo ">>> pciem load ok"
+          else
+            echo "RESULT: FAIL"
+            reboot -f
+          fi
+
+          insmod /lib/modules/nvme-core.ko 2>/dev/null || true
+          insmod /lib/modules/nvme.ko 2>/dev/null || true
+
+          if [ -x /bin/nvme_card ]; then
+            /bin/nvme_card &
+            sleep 3
+            echo "=== dmesg ==="
+            dmesg | tail -50
+            echo "============="
+          fi
+
+          if ls /dev/nvme* 2>/dev/null || ls /sys/class/nvme/ 2>/dev/null | grep -q nvme; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"
+          fi
+
+          reboot -f
+          EOF
+
+          chmod +x initramfs/init
+          (cd initramfs && find . | cpio -H newc -o --quiet | gzip -1 > ../initramfs.cpio.gz)
+          echo "Initramfs size: $(du -sh initramfs.cpio.gz | cut -f1)"
+
+      - name: Run QEMU test
+        run: |
+          sudo cp /boot/vmlinuz-$(uname -r) ./vmlinuz
+          sudo chmod a+r ./vmlinuz
+
+          timeout 120 qemu-system-x86_64 \
+            -machine accel=kvm:tcg \
+            -m 4G \
+            -kernel ./vmlinuz \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyS0 mem=2G panic=1" \
+            -nographic \
+            -no-reboot \
+            2>&1 | col -b | tee qemu_output.txt || true
+
+          cat qemu_output.txt
+
+          if grep -q "^RESULT: PASS" qemu_output.txt; then
+            echo "QEMU test passed"
+          else
+            echo "QEMU test failed"
+            exit 1
+          fi
+
