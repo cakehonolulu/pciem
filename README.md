@@ -81,6 +81,12 @@ graph LR
   - **P2P support (Preliminar!)**: Peer-to-peer DMA between devices with whitelist-based access control.
 - **Userspace**: Implement your PCIe devices _entirely_ in userspace.
 
+## Minimum supported environment
+
+- Linux Kernel Version: `6.6`
+- C Compiler: `gcc-12`
+- Ubuntu Version: `24.04 LTS`
+
 # Examples
 
 ## NVME Controller with 1GB disk
