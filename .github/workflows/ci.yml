@@ -84,28 +84,28 @@ jobs:
     # Use a very new kernel
     name: Build (openSUSE Tumbleweed)
     runs-on: ubuntu-latest
-    container:
-      image: registry.opensuse.org/opensuse/tumbleweed
-
+  
     steps:
-      - name: Install dependencies
-        run: |
-          zypper --non-interactive refresh
-          zypper --non-interactive install \
-            awk \
-            bc \
-            bison \
-            flex \
-            gcc \
-            git \
-            kernel-default-devel \
-            libelf-devel \
-            make \
-            tar
-
       - uses: actions/checkout@v4
-
-      - name: Build
+  
+      - name: Pull image
         run: |
-          KDIR=$(ls -d /usr/src/linux-obj/*/* | head -n1)
-          make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+          if ! docker pull registry.opensuse.org/opensuse/tumbleweed; then
+            docker pull opensuse/tumbleweed
+            docker tag opensuse/tumbleweed registry.opensuse.org/opensuse/tumbleweed
+          fi
+  
+      - name: Install dependencies and build
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            registry.opensuse.org/opensuse/tumbleweed \
+            sh -c '
+              zypper --non-interactive refresh &&
+              zypper --non-interactive install -y \
+                awk bc bison flex gcc git \
+                kernel-default-devel libelf-devel make tar &&
+              KDIR=$(ls -d /usr/src/linux-obj/*/* | head -n1) &&
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+            '
