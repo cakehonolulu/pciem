@@ -25,7 +25,8 @@
  * tree. This also implies vendoring some kernel code, namely the x86
  * isntruction decoder, which is not exported to kernel modules.
  */
-#define pr_fmt(fmt) "%s:smptrace: " fmt, KBUILD_MODNAME
+#define pr_fmt(fmt) KBUILD_MODNAME ": trace: " fmt
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>

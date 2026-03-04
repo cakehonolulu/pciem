@@ -5,7 +5,7 @@
  *              Carlos López <carlos.lopezr4096@gmail.com>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": dma: " fmt
 
 #include "pciem.h"
 #include "dma.h"
