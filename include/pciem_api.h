@@ -50,6 +50,13 @@ struct pciem_cap_msix_userspace
     uint16_t reserved2;
 };
 
+#define PCIEM_CAP_MSI 0
+#define PCIEM_CAP_MSIX 1
+#define PCIEM_CAP_PM 2
+#define PCIEM_CAP_PCIE 3
+#define PCIEM_CAP_VSEC 4
+#define PCIEM_CAP_PASID 5
+
 struct pciem_cap_config
 {
     uint32_t cap_type;
@@ -234,14 +241,5 @@ struct pciem_shared_ring
     char _pad2[60];
     struct pciem_event events[PCIEM_RING_SIZE];
 };
-
-#ifndef __KERNEL__
-#define PCIEM_CAP_MSI 0
-#define PCIEM_CAP_MSIX 1
-#define PCIEM_CAP_PM 2
-#define PCIEM_CAP_PCIE 3
-#define PCIEM_CAP_VSEC 4
-#define PCIEM_CAP_PASID 5
-#endif
 
 #endif /* PCIEM_API_H */

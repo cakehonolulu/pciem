@@ -9,6 +9,7 @@
 
 #include "pciem.h"
 #include "capabilities.h"
+#include "pciem_api.h"
 
 #include <linux/pci_regs.h>
 #include <linux/slab.h>

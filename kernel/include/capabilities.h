@@ -12,16 +12,6 @@
 
 #define MAX_PCI_CAPS 16
 
-enum pciem_cap_type
-{
-    PCIEM_CAP_MSI,
-    PCIEM_CAP_MSIX,
-    PCIEM_CAP_PM,
-    PCIEM_CAP_PCIE,
-    PCIEM_CAP_VSEC,
-    PCIEM_CAP_PASID,
-};
-
 struct pciem_cap_msi_config
 {
     bool has_64bit;
@@ -70,7 +60,7 @@ struct pciem_cap_pasid_config
 
 struct pciem_cap_entry
 {
-    enum pciem_cap_type type;
+    u32 type;
     u8 offset;
     u8 size;
     union {
