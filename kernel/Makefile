@@ -18,10 +18,13 @@ obj-m += pciem.o
 
 ccflags-y += -Wall
 
+# Only add build rules when not invoked by kbuild
+ifeq ($(KERNELRELEASE),)
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
 
 .PHONY: all clean
+endif
