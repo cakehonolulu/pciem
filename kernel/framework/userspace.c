@@ -8,7 +8,7 @@
 #define pr_fmt(fmt) "pciem_userspace: " fmt
 
 #include "pciem.h"
-#include "pciem_userspace.h"
+#include "userspace.h"
 #include "capabilities.h"
 #include "dma.h"
 #include "p2p.h"

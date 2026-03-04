@@ -21,7 +21,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include "pciem_userspace.h"
+#include "pciem_api.h"
 #include "../protopciem_device.h"
 
 #define QEMU_SOCKET_PATH "/tmp/pciem_qemu.sock"

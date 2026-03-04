@@ -11,7 +11,7 @@
 #include "capabilities.h"
 #include "dma.h"
 #include "p2p.h"
-#include "pciem_userspace.h"
+#include "userspace.h"
 
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
