@@ -20,7 +20,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "pciem_userspace.h"
+#include "pciem_api.h"
 
 #define NVME_REG_CAP                0x00
 #define NVME_REG_VS                 0x08

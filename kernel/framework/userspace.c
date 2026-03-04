@@ -5,7 +5,13 @@
  *              Carlos López <carlos.lopezr4096@gmail.com>
  */
 
-#define pr_fmt(fmt) "pciem_userspace: " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": userspace: " fmt
+
+#include "pciem.h"
+#include "userspace.h"
+#include "capabilities.h"
+#include "dma.h"
+#include "p2p.h"
 
 #include <linux/anon_inodes.h>
 #include <linux/capability.h>
@@ -24,11 +30,62 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 
-#include "pciem_capabilities.h"
-#include "pciem_dma.h"
-#include "pciem_framework.h"
-#include "pciem_p2p.h"
-#include "pciem_userspace.h"
+struct pciem_irqfd
+{
+    struct list_head list;
+    struct eventfd_ctx *trigger;
+    wait_queue_entry_t wait;
+    struct work_struct inject_work;
+    struct pciem_userspace_state *us;
+    uint32_t vector;
+    uint32_t flags;
+};
+
+#define PCIEM_UNREGISTERED 0
+#define PCIEM_REGISTERING  1
+#define PCIEM_REGISTERED   2
+
+struct pciem_irqfds {
+    spinlock_t lock;
+    struct list_head items;
+};
+
+struct pciem_tracer {
+    struct pciem_userspace_state *us;
+    struct smptrace_ctx ctx;
+};
+
+struct pciem_userspace_state
+{
+    struct pciem_root_complex *rc;
+
+    struct hlist_head pending_requests[256];
+    spinlock_t pending_lock;
+    uint64_t next_seq;
+
+    atomic_t registered;
+    atomic_t event_pending;
+
+    struct pciem_shared_ring *shared_ring;
+    spinlock_t shared_ring_lock;
+
+    struct eventfd_ctx *eventfd;
+    spinlock_t eventfd_lock;
+
+    struct pciem_irqfds irqfds;
+
+    /* BAR read/write trackers */
+    struct pciem_tracer tracers[PCI_STD_NUM_BARS];
+};
+
+struct pciem_pending_request
+{
+    struct hlist_node node;
+    uint64_t seq;
+    struct completion done;
+    uint64_t response_data;
+    int response_status;
+};
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
 
@@ -109,17 +166,6 @@ static const struct file_operations pciem_instance_fops = {
     .owner = THIS_MODULE,
     .mmap = pciem_instance_mmap,
 };
-
-static void free_pending_request(struct pciem_userspace_state *us, struct pciem_pending_request *req)
-{
-    unsigned long flags;
-
-    spin_lock_irqsave(&us->pending_lock, flags);
-    hlist_del(&req->node);
-    spin_unlock_irqrestore(&us->pending_lock, flags);
-
-    kfree(req);
-}
 
 static struct pciem_pending_request *find_pending_request(struct pciem_userspace_state *us, uint64_t seq)
 {
@@ -233,7 +279,7 @@ struct pciem_userspace_state *pciem_userspace_create(void)
     return us;
 }
 
-void pciem_userspace_destroy(struct pciem_userspace_state *us)
+static void pciem_userspace_destroy(struct pciem_userspace_state *us)
 {
     struct pciem_pending_request *req;
     struct hlist_node *tmp;
@@ -293,7 +339,8 @@ static void pciem_eventfd_signal(struct pciem_userspace_state *us)
 #endif
 }
 
-void pciem_userspace_queue_event(struct pciem_userspace_state *us, struct pciem_event *event)
+static void pciem_userspace_queue_event(struct pciem_userspace_state *us,
+                                        struct pciem_event *event)
 {
     unsigned long flags;
 
@@ -312,36 +359,6 @@ void pciem_userspace_queue_event(struct pciem_userspace_state *us, struct pciem_
     else
         atomic_set(&us->event_pending, 1);
     spin_unlock_irqrestore(&us->eventfd_lock, flags);
-}
-
-int pciem_userspace_wait_response(struct pciem_userspace_state *us, uint64_t seq, uint64_t *data_out,
-                                  unsigned long timeout_ms)
-{
-    struct pciem_pending_request *req;
-    unsigned long timeout_jiffies;
-    int ret;
-
-    req = find_pending_request(us, seq);
-    if (!req)
-        return -EINVAL;
-
-    timeout_jiffies = msecs_to_jiffies(timeout_ms);
-    ret = wait_for_completion_timeout(&req->done, timeout_jiffies);
-
-    if (ret == 0)
-    {
-        pr_warn("Request seq=%llu timed out\n", seq);
-        free_pending_request(us, req);
-        return -ETIMEDOUT;
-    }
-
-    if (data_out)
-        *data_out = req->response_data;
-
-    ret = req->response_status;
-    free_pending_request(us, req);
-
-    return ret;
 }
 
 static int pciem_check_unregistered(struct pciem_userspace_state *us)
@@ -1306,6 +1323,3 @@ void pciem_userspace_cleanup(void)
 }
 
 EXPORT_SYMBOL(pciem_userspace_create);
-EXPORT_SYMBOL(pciem_userspace_destroy);
-EXPORT_SYMBOL(pciem_userspace_queue_event);
-EXPORT_SYMBOL(pciem_userspace_wait_response);
