@@ -1,6 +1,6 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-ccflags-y := -I$(src)/../include -I$(src)/framework
+ccflags-y := -I$(src)/../include -I$(src)/include
 
 pciem-objs := framework/pciem.o \
               framework/capabilities.o \

@@ -7,8 +7,9 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include "pciem_capabilities.h"
-#include "pciem_framework.h"
+#include "pciem.h"
+#include "capabilities.h"
+
 #include <linux/pci_regs.h>
 #include <linux/slab.h>
 #include <linux/version.h>

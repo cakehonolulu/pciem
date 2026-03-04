@@ -7,8 +7,9 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include "pciem_dma.h"
-#include "pciem_framework.h"
+#include "pciem.h"
+#include "dma.h"
+
 #include <asm/cacheflush.h>
 #include <linux/atomic.h>
 #include <linux/iommu.h>

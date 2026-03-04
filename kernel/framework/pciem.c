@@ -7,6 +7,12 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include "pciem.h"
+#include "capabilities.h"
+#include "dma.h"
+#include "p2p.h"
+#include "pciem_userspace.h"
+
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 
@@ -36,12 +42,6 @@
 #include <linux/vmalloc.h>
 #include <linux/idr.h>
 #include <linux/workqueue.h>
-
-#include "pciem_capabilities.h"
-#include "pciem_dma.h"
-#include "pciem_framework.h"
-#include "pciem_p2p.h"
-#include "pciem_userspace.h"
 
 static char *pciem_phys_region = "";
 module_param(pciem_phys_region, charp, 0444);

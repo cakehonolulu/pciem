@@ -7,6 +7,12 @@
 
 #define pr_fmt(fmt) "pciem_userspace: " fmt
 
+#include "pciem.h"
+#include "pciem_userspace.h"
+#include "capabilities.h"
+#include "dma.h"
+#include "p2p.h"
+
 #include <linux/anon_inodes.h>
 #include <linux/capability.h>
 #include <linux/eventfd.h>
@@ -23,12 +29,6 @@
 #include <linux/version.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
-
-#include "pciem_capabilities.h"
-#include "pciem_dma.h"
-#include "pciem_framework.h"
-#include "pciem_p2p.h"
-#include "pciem_userspace.h"
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
 
