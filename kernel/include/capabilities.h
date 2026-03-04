@@ -58,56 +58,6 @@ struct pciem_cap_pasid_config
     bool privileged_mode;
 };
 
-struct pciem_cap_entry
-{
-    u32 type;
-    u8 offset;
-    u8 size;
-    union {
-        struct pciem_cap_msi_config msi;
-        struct pciem_cap_msix_config msix;
-        struct pciem_cap_pm_config pm;
-        struct pciem_cap_pcie_config pcie;
-        struct pciem_cap_vsec_config vsec;
-        struct pciem_cap_pasid_config pasid;
-    } config;
-
-    union {
-        struct pciem_msi_state
-        {
-            u16 control;
-            u32 address_lo;
-            u32 address_hi;
-            u16 data;
-            u32 mask_bits;
-        } msi_state;
-
-        struct pciem_msix_state
-        {
-            u16 control;
-        } msix_state;
-
-        struct pciem_pm_state
-        {
-            u16 control;
-            u16 status;
-        } pm_state;
-
-        struct pciem_pasid_state
-        {
-            u16 control;
-            u32 pasid;
-        } pasid_state;
-    } state;
-};
-
-struct pciem_cap_manager
-{
-    struct pciem_cap_entry caps[MAX_PCI_CAPS];
-    int num_caps;
-    u8 next_offset;
-};
-
 struct pciem_root_complex;
 
 int pciem_add_cap_msi(struct pciem_root_complex *v, struct pciem_cap_msi_config *cfg);
