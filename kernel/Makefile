@@ -8,7 +8,7 @@ pciem-objs := framework/pciem.o \
               framework/dma.o \
               framework/userspace.o
 
-pciem-objs += trace/smptrace_main.o \
+pciem-objs += trace/smptrace.o \
               trace/arch/x86/lib/insn.o \
               trace/arch/x86/lib/insn-eval.o \
               trace/arch/x86/lib/inat.o
