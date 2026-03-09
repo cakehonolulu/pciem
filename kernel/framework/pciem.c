@@ -910,7 +910,7 @@ int pciem_complete_init(struct pciem_root_complex *v)
         mem_res->end = bar->carved_end;
         mem_res->flags = IORESOURCE_MEM;
 
-        if (request_resource(pciem_pool.res, mem_res)) {
+        if (insert_resource(pciem_pool.res, mem_res)) {
             kfree(mem_res->name);
             kfree(mem_res);
             rc = -EBUSY;
