@@ -184,6 +184,23 @@ static void pciem_pool_exit(void)
     pr_info("pool: BAR pool released\n");
 }
 
+static void pciem_intx_noop(struct irq_data *d) {}
+
+static struct irq_chip pciem_intx_chip = {
+    .name        = "pciem-INTx",
+    .irq_mask    = pciem_intx_noop,
+    .irq_unmask  = pciem_intx_noop,
+};
+
+static int pciem_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+{
+    struct pci_host_bridge *bridge = pci_find_host_bridge(dev->bus);
+    struct pciem_host_bridge_priv *priv = pci_host_bridge_priv(bridge);
+
+    /* ???: Should share only a single INTA line? */
+    return priv->v->intx_virq;
+}
+
 int pciem_register_bar(struct pciem_root_complex *v, u32 bar_num, resource_size_t size, u32 flags)
 {
     phys_addr_t phys;
@@ -227,10 +244,8 @@ void pciem_trigger_msi(struct pciem_root_complex *v, int vector)
     struct pci_dev *dev = v->pciem_pdev;
     int irq;
 
-    if (!dev || (!dev->msi_enabled && !dev->msix_enabled))
-    {
-        pr_warn("Cannot trigger MSI/MSI-X: device not ready or interrupts not enabled (msi=%d, msix=%d)\n",
-                dev ? dev->msi_enabled : 0, dev ? dev->msix_enabled : 0);
+    if (!dev) {
+        pr_warn("Cannot trigger interrupt: no PCI device\n");
         return;
     }
 
@@ -245,10 +260,15 @@ void pciem_trigger_msi(struct pciem_root_complex *v, int vector)
     else {
         irq = dev->irq;
         if (irq == 0) {
-            pr_warn("Cannot trigger MSI: dev->irq is 0\n");
+            pr_warn_ratelimited("Cannot trigger interrupt: dev->irq is 0 "
+                                "(msi=%d, msix=%d) — device not yet open?\n",
+                                dev->msi_enabled, dev->msix_enabled);
             return;
         }
-        pr_info("Triggering MSI (IRQ %u) via irq_work\n", irq);
+        if (dev->msi_enabled)
+            pr_info("Triggering MSI (IRQ %u) via irq_work\n", irq);
+        else
+            pr_info("Triggering INTx (IRQ %u) via irq_work\n", irq);
     }
 
     v->pending_msi_irq = irq;
@@ -725,6 +745,20 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct lis
     bridge->busnr = busnr;
     bridge->ops = &vph_pci_ops;
     list_splice_init(resources, &bridge->windows);
+
+    v->intx_domain = irq_domain_add_linear(NULL, 1, &irq_domain_simple_ops, v);
+    if (!v->intx_domain) {
+        pr_err("init: failed to create INTx irq_domain\n");
+        pci_free_host_bridge(bridge);
+        return -ENOMEM;
+    }
+
+    v->intx_virq = irq_create_mapping(v->intx_domain, 0);
+    irq_set_chip_and_handler(v->intx_virq, &pciem_intx_chip,
+                            handle_simple_irq);
+
+    bridge->map_irq     = pciem_map_irq;
+    bridge->swizzle_irq = pci_common_swizzle;
 
     rc = pci_scan_root_bus_bridge(bridge);
     if (rc < 0) {

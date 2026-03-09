@@ -635,6 +635,7 @@ static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pcie
     *(u8 *)(config + PCI_HEADER_TYPE) = cfg.header_type;
     *(u16 *)(config + PCI_COMMAND) = PCI_COMMAND_MEMORY;
     *(u16 *)(config + PCI_STATUS) = PCI_STATUS_CAP_LIST;
+    *(u8 *)(config + PCI_INTERRUPT_PIN) = 1;
 
     pr_info("Config space set: vendor=0x%04x, device=0x%04x, class=0x%02x%02x%02x\n", cfg.vendor_id, cfg.device_id,
             cfg.class_code[2], cfg.class_code[1], cfg.class_code[0]);

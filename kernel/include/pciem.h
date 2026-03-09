@@ -119,6 +119,9 @@ struct pciem_root_complex
 
     struct pciem_p2p_manager *p2p_mgr;
 
+    unsigned int        intx_virq;
+    struct irq_domain  *intx_domain;
+
     struct work_struct activation_work;
     bool activated;
 
