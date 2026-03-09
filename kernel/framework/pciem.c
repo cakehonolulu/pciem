@@ -239,40 +239,36 @@ int pciem_register_bar(struct pciem_root_complex *v, u32 bar_num, resource_size_
 }
 EXPORT_SYMBOL(pciem_register_bar);
 
-void pciem_trigger_msi(struct pciem_root_complex *v, int vector)
+int pciem_trigger_msi(struct pciem_root_complex *v, int vector)
 {
     struct pci_dev *dev = v->pciem_pdev;
     int irq;
 
     if (!dev) {
         pr_warn("Cannot trigger interrupt: no PCI device\n");
-        return;
+        return -ENODEV;
     }
 
     if (dev->msix_enabled) {
-        irq = pci_irq_vector(dev, vector);
-        if (irq < 0) {
-            pr_warn("Cannot get IRQ for MSI-X vector %d: %d\n", vector, irq);
-            return;
+        int max_vec = pci_msix_vec_count(dev);
+        if (vector < 0 || vector >= max_vec) {
+            pr_debug("pciem: vector %d out of range (max %d), using 0\n", vector, max_vec - 1);
+            vector = 0;
         }
-        pr_info("Triggering MSI-X vector %d (IRQ %u) via irq_work\n", vector, irq);
+        irq = pci_irq_vector(dev, vector);
     }
     else {
         irq = dev->irq;
-        if (irq == 0) {
-            pr_warn_ratelimited("Cannot trigger interrupt: dev->irq is 0 "
-                                "(msi=%d, msix=%d) — device not yet open?\n",
-                                dev->msi_enabled, dev->msix_enabled);
-            return;
-        }
-        if (dev->msi_enabled)
-            pr_info("Triggering MSI (IRQ %u) via irq_work\n", irq);
-        else
-            pr_info("Triggering INTx (IRQ %u) via irq_work\n", irq);
+    }
+
+    if (irq <= 0) {
+        pr_warn_ratelimited("pciem: Cannot get IRQ for vector %d\n", vector);
+        return -EINVAL;
     }
 
     v->pending_msi_irq = irq;
     irq_work_queue(&v->msi_irq_work);
+    return 0;
 }
 EXPORT_SYMBOL(pciem_trigger_msi);
 

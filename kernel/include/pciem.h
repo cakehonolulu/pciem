@@ -128,7 +128,7 @@ struct pciem_root_complex
     bool detaching;
 };
 
-void pciem_trigger_msi(struct pciem_root_complex *v, int vector);
+int pciem_trigger_msi(struct pciem_root_complex *v, int vector);
 int pciem_complete_init(struct pciem_root_complex *v);
 int pciem_start_device(struct pciem_root_complex *v);
 int pciem_register_bar(struct pciem_root_complex *v, uint32_t bar_num, resource_size_t size, u32 flags);

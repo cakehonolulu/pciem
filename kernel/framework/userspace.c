@@ -703,7 +703,11 @@ static long pciem_ioctl_inject_irq(struct pciem_userspace_state *us, struct pcie
 
     pr_debug("Injecting MSI vector %d\n", inject.vector);
 
-    pciem_trigger_msi(us->rc, inject.vector);
+    if (pciem_trigger_msi(us->rc, inject.vector) != 0)
+    {
+        pr_err("pciem_ioctl_inject_irq: Failed to trigger MSI!");
+        return -EFAULT;
+    }
 
     return 0;
 }
@@ -925,7 +929,11 @@ static void pciem_irqfd_work(struct work_struct *work)
     struct pciem_userspace_state *us = irqfd->us;
 
     if (us && us->rc) {
-        pciem_trigger_msi(us->rc, irqfd->vector);
+        if (pciem_trigger_msi(us->rc, irqfd->vector) != 0)
+        {
+            pr_err("pciem_irqfd_work: Failed to trigger MSI!");
+            BUG();
+        }
     }
 }
 
