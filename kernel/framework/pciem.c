@@ -302,7 +302,7 @@ static void pciem_bus_init_resources(struct pciem_root_complex *v)
         {
             dev->resource[i].start = bar->phys_addr;
             dev->resource[i].end = bar->phys_addr + bar->size - 1;
-            dev->resource[i].flags |= IORESOURCE_BUSY | IORESOURCE_PCI_FIXED;
+            dev->resource[i].flags |= IORESOURCE_MEM | IORESOURCE_PCI_FIXED;
             bar->res = &dev->resource[i];
 
             bar->base_addr_val = (u32)(bar->phys_addr & 0xFFFFFFFF);
@@ -489,9 +489,9 @@ static int pciem_write_bar_address(struct pciem_root_complex *v, u32 idx, u32 va
     {
         u32 mask = (u32)(~(bar->size - 1));
         if (bar->flags & PCI_BASE_ADDRESS_SPACE_IO)
-            mask &= ~PCI_BASE_ADDRESS_IO_MASK;
+            mask &= PCI_BASE_ADDRESS_IO_MASK;
         else
-            mask &= ~PCI_BASE_ADDRESS_MEM_MASK;
+            mask &= PCI_BASE_ADDRESS_MEM_MASK;
 
         bar->base_addr_val = value & mask;
         return PCIBIOS_SUCCESSFUL;
