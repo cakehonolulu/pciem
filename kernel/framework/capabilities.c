@@ -5,10 +5,12 @@
  *              Carlos López <carlos.lopezr4096@gmail.com>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": cap: " fmt
 
-#include "pciem_capabilities.h"
-#include "pciem_framework.h"
+#include "pciem.h"
+#include "capabilities.h"
+#include "pciem_api.h"
+
 #include <linux/pci_regs.h>
 #include <linux/slab.h>
 #include <linux/version.h>
@@ -17,6 +19,56 @@
 #else
 #include <linux/unaligned.h>
 #endif
+
+struct pciem_cap_entry
+{
+    u32 type;
+    u8 offset;
+    u8 size;
+    union {
+        struct pciem_cap_msi_config msi;
+        struct pciem_cap_msix_config msix;
+        struct pciem_cap_pm_config pm;
+        struct pciem_cap_pcie_config pcie;
+        struct pciem_cap_vsec_config vsec;
+        struct pciem_cap_pasid_config pasid;
+    } config;
+
+    union {
+        struct pciem_msi_state
+        {
+            u16 control;
+            u32 address_lo;
+            u32 address_hi;
+            u16 data;
+            u32 mask_bits;
+        } msi_state;
+
+        struct pciem_msix_state
+        {
+            u16 control;
+        } msix_state;
+
+        struct pciem_pm_state
+        {
+            u16 control;
+            u16 status;
+        } pm_state;
+
+        struct pciem_pasid_state
+        {
+            u16 control;
+            u32 pasid;
+        } pasid_state;
+    } state;
+};
+
+struct pciem_cap_manager
+{
+    struct pciem_cap_entry caps[MAX_PCI_CAPS];
+    int num_caps;
+    u8 next_offset;
+};
 
 static u8 msi_cap_size(struct pciem_cap_msi_config *cfg)
 {

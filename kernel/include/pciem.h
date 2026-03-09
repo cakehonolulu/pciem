@@ -34,8 +34,6 @@ struct pciem_host_bridge_priv {
 #endif
 };
 
-#include "pciem_p2p.h"
-
 struct pciem_mempool {
     phys_addr_t         base;
     resource_size_t     total_size;

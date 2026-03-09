@@ -5,10 +5,11 @@
  *              Carlos López <carlos.lopezr4096@gmail.com>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": dma: " fmt
 
-#include "pciem_dma.h"
-#include "pciem_framework.h"
+#include "pciem.h"
+#include "dma.h"
+
 #include <asm/cacheflush.h>
 #include <linux/atomic.h>
 #include <linux/iommu.h>

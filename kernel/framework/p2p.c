@@ -5,10 +5,11 @@
  *              Carlos López <carlos.lopezr4096@gmail.com>
  */
 
-#define pr_fmt(fmt) "pciem_p2p: " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": p2p: " fmt
 
-#include "pciem_p2p.h"
-#include "pciem_framework.h"
+#include "pciem.h"
+#include "p2p.h"
+
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/string.h>

@@ -1,14 +1,14 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-ccflags-y := -I$(src)/../include -I$(src)/framework
+ccflags-y := -I$(src)/../include -I$(src)/include
 
-pciem-objs := framework/pciem_framework.o \
-              framework/pciem_capabilities.o \
-              framework/pciem_p2p.o \
-              framework/pciem_dma.o \
-			  framework/pciem_userspace.o
+pciem-objs := framework/pciem.o \
+              framework/capabilities.o \
+              framework/p2p.o \
+              framework/dma.o \
+              framework/userspace.o
 
-pciem-objs += trace/smptrace_main.o \
+pciem-objs += trace/smptrace.o \
               trace/arch/x86/lib/insn.o \
               trace/arch/x86/lib/insn-eval.o \
               trace/arch/x86/lib/inat.o
