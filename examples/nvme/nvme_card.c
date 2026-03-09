@@ -46,6 +46,7 @@
 
 #define NVME_ADMIN_DELETE_SQ        0x00
 #define NVME_ADMIN_CREATE_SQ        0x01
+#define NVME_ADMIN_GET_LOG_PAGE     0x02
 #define NVME_ADMIN_DELETE_CQ        0x04
 #define NVME_ADMIN_CREATE_CQ        0x05
 #define NVME_ADMIN_IDENTIFY         0x06
@@ -528,6 +529,7 @@ static void nvme_write_reg(struct nvme_device *dev, uint32_t offset, uint64_t va
 static const char* adminopcode2str(uint8_t op)
 {
     switch (op) {
+        case NVME_ADMIN_GET_LOG_PAGE: return "NVME_ADMIN_GET_LOG_PAGE";
         case NVME_ADMIN_DELETE_SQ: return "NVME_ADMIN_DELETE_SQ";
         case NVME_ADMIN_CREATE_SQ: return "NVME_ADMIN_CREATE_SQ";
         case NVME_ADMIN_DELETE_CQ: return "NVME_ADMIN_DELETE_CQ";
@@ -838,6 +840,28 @@ static uint32_t nvme_delete_queue(struct nvme_device *dev,
     return NVME_SUCCESS;
 }
 
+static uint32_t nvme_get_log_page(struct nvme_device *dev,
+                                  struct nvme_command *cmd,
+                                  uint32_t *result)
+{
+    uint8_t lid = cmd->cdw10.raw & 0xff;
+    uint32_t len = ((cmd->cdw10.raw >> 16) & 0xffff) + 1;
+
+    logx("  GET_LOG_PAGE lid=0x%02x len=%u", lid, len);
+
+    switch (lid) {
+    case 0x01:
+    case 0x02:
+        logx("    log page 0x%02x - dummy success", lid);
+        *result = 0;
+        return NVME_SUCCESS;
+
+    default:
+        logx("? unknown log page 0x%02x", lid);
+        return NVME_INVALID_FIELD;
+    }
+}
+
 static uint32_t nvme_set_features(struct nvme_device *dev,
                                   const struct nvme_command *cmd,
                                   uint32_t *result)
@@ -848,13 +872,13 @@ static uint32_t nvme_set_features(struct nvme_device *dev,
 
     switch (fid) {
         case NVME_FEAT_NUM_QUEUES: {
-            uint16_t nsq = cmd->cdw11.feat_num_queues.nsqa;
-            uint16_t ncq = cmd->cdw11.feat_num_queues.ncqa;
-            logx("  FEAT: nsq=%u/%u ncq=%u/%u",
-                 nsq, MAX_QUEUES, ncq, MAX_QUEUES);
-            nsq = nsq < MAX_QUEUES ? nsq : MAX_QUEUES;
-            ncq = ncq < MAX_QUEUES ? ncq : MAX_QUEUES;
-            *result = (ncq << 16) | nsq;
+            uint16_t nsqa = cmd->cdw11.feat_num_queues.nsqa;
+            uint16_t ncqa = cmd->cdw11.feat_num_queues.ncqa;
+
+            *result = ((MAX_QUEUES - 1) << 16) | (MAX_QUEUES - 1);
+
+            logx("  FEAT: NUM_QUEUES requested nsqa=%u ncqa=%u → granted %u/%u",
+                 nsqa, ncqa, MAX_QUEUES-1, MAX_QUEUES-1);
             return NVME_SUCCESS;
         }
         case NVME_FEAT_ARBITRATION:
@@ -894,6 +918,8 @@ static uint32_t nvme_execute_admin_command(struct nvme_device *dev,
     logx("  CMD: admin::%s nsid=%u", adminopcode2str(cmd->opcode), cmd->nsid);
 
     switch (cmd->opcode) {
+        case NVME_ADMIN_GET_LOG_PAGE:
+            return nvme_get_log_page(dev, cmd, result);
         case NVME_ADMIN_IDENTIFY:
             return nvme_identify(dev, cmd);
         case NVME_ADMIN_CREATE_CQ:
@@ -1001,11 +1027,11 @@ static void nvme_execute_command(struct nvme_device *dev,
     }
 
     logx(". IRQ: injecting vector=%u on qid=%u", q->vector, q->id);
-    // FIXME: this does not work, it's probably an issue in the kernel
-    // irq.vector = q->vector;
-    irq.vector = 0;
+
+    irq.vector = q->vector;
+
     if (ioctl(dev->fd, PCIEM_IOCTL_INJECT_IRQ, &irq))
-        log("x failed IRQ=%d injection", q->vector);
+        log("x failed IRQ=%u injection on qid=%u", q->vector, q->id);
 }
 
 static int nvme_read_sq_entry(struct nvme_device *dev, struct nvme_queue *q,
@@ -1293,7 +1319,7 @@ static int dev_register(struct nvme_device *dev)
             .bar_index = 2,
             .table_offset = 0,
             .pba_offset = 4096,
-            .table_size = 16
+            .table_size = MAX_QUEUES
         }
     };
     struct pciem_eventfd_config efd_cfg = {0};
