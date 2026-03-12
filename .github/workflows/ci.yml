@@ -98,6 +98,30 @@ jobs:
           KDIR=$(ls -d /usr/src/linux-headers-* | head -n1)
           make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
 
+  fedora:
+    name: Build (Fedora Latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull Docker image
+        run: docker pull fedora:latest
+
+      - name: Install dependencies and build
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            fedora:latest \
+            sh -c '
+              dnf install -y gcc make bc flex bison elfutils-libelf-devel \
+                kernel kernel-devel kernel-headers \
+                pipewire-devel SDL3-devel &&
+              KDIR=$(ls -d /usr/src/kernels/* | head -n1) &&
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+            '
+
   opensuse-tumbleweed:
     # Use a very new kernel
     name: Build (openSUSE Tumbleweed)
@@ -128,8 +152,8 @@ jobs:
               make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
             '
 
-  qemu-test:
-    name: QEMU Test (x86_64)
+  qemu-ubuntu-latest:
+    name: QEMU Test (Ubuntu Latest)
     runs-on: ubuntu-latest
 
     steps:
@@ -158,15 +182,46 @@ jobs:
           # Mischief managed, put away the marauders map now 
           sudo rm /etc/apt/sources.list.d/plucky-universe.list
 
-      - name: Build
+      - name: Install host dependencies
         run: |
-          KDIR=$(ls -d /lib/modules/*/build | head -n1)
-          make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 busybox-static cpio zstd xz-utils
+
+      - name: Build module and extract kernel artifacts via Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ubuntu:latest \
+            sh -c '
+              set -e
+              apt-get update
+              echo "deb http://archive.ubuntu.com/ubuntu plucky universe" > /etc/apt/sources.list.d/plucky.list
+              apt-get update
+              apt-get install -y build-essential bc flex bison libelf-dev \
+                linux-image-generic linux-headers-generic \
+                libpipewire-0.3-dev libsdl3-dev
+              rm /etc/apt/sources.list.d/plucky.list
+
+              KDIR=$(ls -d /usr/src/linux-headers-*-generic | head -n1)
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+
+              KVER=$(basename $(ls -d /lib/modules/*/ | head -n1) /)
+              echo "$KVER" > /workspace/.kver
+
+              VMLINUZ=$(ls /boot/vmlinuz-*-generic | head -n1)
+              cp "$VMLINUZ" /workspace/vmlinuz-guest
+
+              mkdir -p /workspace/guest-nvme-mods
+              find /lib/modules/*/kernel/drivers/nvme -name "*.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+              find /lib/modules/*/kernel/crypto -name "hkdf.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+            '
 
       - name: Build initramfs
         run: |
-          KVER=$(uname -r)
-
+          KVER=$(cat .kver)
           mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
 
           cp /bin/busybox initramfs/bin/busybox
@@ -187,10 +242,15 @@ jobs:
                 done
           fi
 
-          for mod in nvme-core.ko nvme.ko; do
-            src=$(find /lib/modules/$KVER -name "$mod" 2>/dev/null | head -n1)
-            [ -n "$src" ] && cp "$src" initramfs/lib/modules/
+          for f in guest-nvme-mods/*.ko.zst; do
+            [ -f "$f" ] && zstd -d "$f" -o "initramfs/lib/modules/$(basename "${f%.zst}")"
           done
+
+          for f in guest-nvme-mods/*.ko.xz; do
+            [ -f "$f" ] && xz -dk --stdout "$f" > "initramfs/lib/modules/$(basename "${f%.xz}")"
+          done
+
+          cp guest-nvme-mods/*.ko initramfs/lib/modules/ 2>/dev/null || true
 
           cat > initramfs/init << 'EOF'
           #!/bin/sh
@@ -206,8 +266,14 @@ jobs:
             reboot -f
           fi
 
-          insmod /lib/modules/nvme-core.ko 2>/dev/null || true
-          insmod /lib/modules/nvme.ko 2>/dev/null || true
+          for ko in /lib/modules/hkdf.ko* \
+                    /lib/modules/nvme-keyring.ko* \
+                    /lib/modules/nvme-auth.ko* \
+                    /lib/modules/nvme-core.ko* \
+                    /lib/modules/nvme-fabrics.ko* \
+                    /lib/modules/nvme.ko*; do
+            [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
+          done
 
           if [ -x /bin/nvme_card ]; then
             /bin/nvme_card &
@@ -232,13 +298,595 @@ jobs:
 
       - name: Run QEMU test
         run: |
-          sudo cp /boot/vmlinuz-$(uname -r) ./vmlinuz
-          sudo chmod a+r ./vmlinuz
+          sudo chmod a+r vmlinuz-guest
 
           timeout 120 qemu-system-x86_64 \
             -machine accel=kvm:tcg \
             -m 4G \
-            -kernel ./vmlinuz \
+            -kernel ./vmlinuz-guest \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyS0 mem=2G panic=1" \
+            -nographic \
+            -no-reboot \
+            2>&1 | col -b | tee qemu_output.txt || true
+
+          cat qemu_output.txt
+
+          if grep -q "^RESULT: PASS" qemu_output.txt; then
+            echo "QEMU test passed"
+          else
+            echo "QEMU test failed"
+            exit 1
+          fi
+
+  qemu-ubuntu-lts:
+    name: QEMU Test (Ubuntu 24.04 LTS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull Docker image
+        run: docker pull ubuntu:24.04
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 busybox-static cpio zstd xz-utils
+
+      - name: Build module and extract kernel artifacts via Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ubuntu:24.04 \
+            sh -c '
+              set -e
+              apt-get update
+              echo "deb http://archive.ubuntu.com/ubuntu plucky universe" > /etc/apt/sources.list.d/plucky.list
+              apt-get update
+              apt-get install -y build-essential bc flex bison libelf-dev \
+                linux-image-generic linux-headers-generic \
+                libpipewire-0.3-dev libsdl3-dev
+              rm /etc/apt/sources.list.d/plucky.list
+
+              KDIR=$(ls -d /usr/src/linux-headers-*-generic | head -n1)
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+
+              KVER=$(basename $(ls -d /lib/modules/*/ | head -n1) /)
+              echo "$KVER" > /workspace/.kver
+
+              VMLINUZ=$(ls /boot/vmlinuz-*-generic | head -n1)
+              cp "$VMLINUZ" /workspace/vmlinuz-guest
+
+              mkdir -p /workspace/guest-nvme-mods
+              find /lib/modules/*/kernel/drivers/nvme -name "*.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+              find /lib/modules/*/kernel/crypto -name "hkdf.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+            '
+
+      - name: Build initramfs
+        run: |
+          KVER=$(cat .kver)
+          mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
+
+          cp /bin/busybox initramfs/bin/busybox
+          for cmd in sh ls lsmod insmod sleep cat echo mount dmesg; do
+            ln -s busybox initramfs/bin/$cmd
+          done
+
+          cp kernel/pciem.ko initramfs/lib/modules/
+
+          if [ -f examples/nvme/nvme_card ]; then
+            cp examples/nvme/nvme_card initramfs/bin/
+            ldd examples/nvme/nvme_card \
+              | grep -o '/[^ ]*' \
+              | while read lib; do
+                  [ -f "$lib" ] || continue
+                  mkdir -p "initramfs/$(dirname $lib)"
+                  cp "$lib" "initramfs/$lib"
+                done
+          fi
+
+          for f in guest-nvme-mods/*.ko.zst; do
+            [ -f "$f" ] && zstd -d "$f" -o "initramfs/lib/modules/$(basename "${f%.zst}")"
+          done
+
+          for f in guest-nvme-mods/*.ko.xz; do
+            [ -f "$f" ] && xz -dk --stdout "$f" > "initramfs/lib/modules/$(basename "${f%.xz}")"
+          done
+
+          cp guest-nvme-mods/*.ko initramfs/lib/modules/ 2>/dev/null || true
+
+          cat > initramfs/init << 'EOF'
+          #!/bin/sh
+          mount -t proc  none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev 2>/dev/null || true
+
+          if insmod /lib/modules/pciem.ko \
+              pciem_phys_region=0x80000000:0x200000; then
+            echo ">>> pciem load ok"
+          else
+            echo "RESULT: FAIL"
+            reboot -f
+          fi
+
+          for ko in /lib/modules/hkdf.ko* \
+                    /lib/modules/nvme-keyring.ko* \
+                    /lib/modules/nvme-auth.ko* \
+                    /lib/modules/nvme-core.ko* \
+                    /lib/modules/nvme-fabrics.ko* \
+                    /lib/modules/nvme.ko*; do
+            [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
+          done
+
+          if [ -x /bin/nvme_card ]; then
+            /bin/nvme_card &
+            sleep 3
+            echo "=== dmesg ==="
+            dmesg | tail -50
+            echo "============="
+          fi
+
+          if ls /dev/nvme* 2>/dev/null || ls /sys/class/nvme/ 2>/dev/null | grep -q nvme; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"
+          fi
+
+          reboot -f
+          EOF
+
+          chmod +x initramfs/init
+          (cd initramfs && find . | cpio -H newc -o --quiet | gzip -1 > ../initramfs.cpio.gz)
+          echo "Initramfs size: $(du -sh initramfs.cpio.gz | cut -f1)"
+
+      - name: Run QEMU test
+        run: |
+          sudo chmod a+r vmlinuz-guest
+
+          timeout 120 qemu-system-x86_64 \
+            -machine accel=kvm:tcg \
+            -m 4G \
+            -kernel ./vmlinuz-guest \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyS0 mem=2G panic=1" \
+            -nographic \
+            -no-reboot \
+            2>&1 | col -b | tee qemu_output.txt || true
+
+          cat qemu_output.txt
+
+          if grep -q "^RESULT: PASS" qemu_output.txt; then
+            echo "QEMU test passed"
+          else
+            echo "QEMU test failed"
+            exit 1
+          fi
+
+  qemu-debian:
+    name: QEMU Test (Debian Stable)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull Docker image
+        run: docker pull debian:stable-slim
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 busybox-static cpio zstd xz-utils
+
+      - name: Build module and extract kernel artifacts via Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            debian:stable-slim \
+            sh -c '
+              set -e
+              apt-get update
+              apt-get install -y build-essential bc flex bison libelf-dev git \
+                linux-image-amd64 linux-headers-amd64 \
+                libpipewire-0.3-dev libsdl3-dev
+
+              KDIR=$(ls -d /usr/src/linux-headers-*-amd64 | head -n1)
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+
+              KVER=$(basename $(ls -d /lib/modules/*/ | head -n1) /)
+              echo "$KVER" > /workspace/.kver
+
+              VMLINUZ=$(ls /boot/vmlinuz-*-amd64 | head -n1)
+              cp "$VMLINUZ" /workspace/vmlinuz-guest
+
+              mkdir -p /workspace/guest-nvme-mods
+              find /lib/modules/*/kernel/drivers/nvme -name "*.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+              find /lib/modules/*/kernel/crypto -name "hkdf.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+            '
+
+      - name: Build initramfs
+        run: |
+          KVER=$(cat .kver)
+          mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
+
+          cp /bin/busybox initramfs/bin/busybox
+          for cmd in sh ls lsmod insmod sleep cat echo mount dmesg; do
+            ln -s busybox initramfs/bin/$cmd
+          done
+
+          cp kernel/pciem.ko initramfs/lib/modules/
+
+          if [ -f examples/nvme/nvme_card ]; then
+            cp examples/nvme/nvme_card initramfs/bin/
+            ldd examples/nvme/nvme_card \
+              | grep -o '/[^ ]*' \
+              | while read lib; do
+                  [ -f "$lib" ] || continue
+                  mkdir -p "initramfs/$(dirname $lib)"
+                  cp "$lib" "initramfs/$lib"
+                done
+          fi
+
+          for f in guest-nvme-mods/*.ko.zst; do
+            [ -f "$f" ] && zstd -d "$f" -o "initramfs/lib/modules/$(basename "${f%.zst}")"
+          done
+
+          for f in guest-nvme-mods/*.ko.xz; do
+            [ -f "$f" ] && xz -dk --stdout "$f" > "initramfs/lib/modules/$(basename "${f%.xz}")"
+          done
+
+          cp guest-nvme-mods/*.ko initramfs/lib/modules/ 2>/dev/null || true
+
+          cat > initramfs/init << 'EOF'
+          #!/bin/sh
+          mount -t proc  none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev 2>/dev/null || true
+
+          if insmod /lib/modules/pciem.ko \
+              pciem_phys_region=0x80000000:0x200000; then
+            echo ">>> pciem load ok"
+          else
+            echo "RESULT: FAIL"
+            reboot -f
+          fi
+
+          for ko in /lib/modules/hkdf.ko* \
+                    /lib/modules/nvme-keyring.ko* \
+                    /lib/modules/nvme-auth.ko* \
+                    /lib/modules/nvme-core.ko* \
+                    /lib/modules/nvme-fabrics.ko* \
+                    /lib/modules/nvme.ko*; do
+            [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
+          done
+
+          if [ -x /bin/nvme_card ]; then
+            /bin/nvme_card &
+            sleep 3
+            echo "=== dmesg ==="
+            dmesg | tail -50
+            echo "============="
+          fi
+
+          if ls /dev/nvme* 2>/dev/null || ls /sys/class/nvme/ 2>/dev/null | grep -q nvme; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"
+          fi
+
+          reboot -f
+          EOF
+
+          chmod +x initramfs/init
+          (cd initramfs && find . | cpio -H newc -o --quiet | gzip -1 > ../initramfs.cpio.gz)
+          echo "Initramfs size: $(du -sh initramfs.cpio.gz | cut -f1)"
+
+      - name: Run QEMU test
+        run: |
+          sudo chmod a+r vmlinuz-guest
+
+          timeout 120 qemu-system-x86_64 \
+            -machine accel=kvm:tcg \
+            -m 4G \
+            -kernel ./vmlinuz-guest \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyS0 mem=2G panic=1" \
+            -nographic \
+            -no-reboot \
+            2>&1 | col -b | tee qemu_output.txt || true
+
+          cat qemu_output.txt
+
+          if grep -q "^RESULT: PASS" qemu_output.txt; then
+            echo "QEMU test passed"
+          else
+            echo "QEMU test failed"
+            exit 1
+          fi
+
+  qemu-fedora:
+    name: QEMU Test (Fedora Latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull Docker image
+        run: docker pull fedora:latest
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 busybox-static cpio zstd xz-utils
+
+      - name: Build module and extract kernel artifacts via Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            fedora:latest \
+            sh -c '
+              set -e
+              dnf install -y gcc make bc flex bison elfutils-libelf-devel \
+                kernel kernel-devel kernel-headers \
+                pipewire-devel SDL3-devel
+
+              KDIR=$(ls -d /usr/src/kernels/* | head -n1)
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+
+              KVER=$(basename $(ls -d /lib/modules/*/ | head -n1) /)
+              echo "$KVER" > /workspace/.kver
+
+              VMLINUZ=$(ls /lib/modules/*/vmlinuz 2>/dev/null | head -n1 || ls /boot/vmlinuz-* | grep -v rescue | head -n1)
+              cp "$VMLINUZ" /workspace/vmlinuz-guest
+
+              mkdir -p /workspace/guest-nvme-mods
+              find /lib/modules/*/kernel/drivers/nvme -name "*.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+              find /lib/modules/*/kernel/crypto -name "hkdf.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+            '
+
+      - name: Build initramfs
+        run: |
+          KVER=$(cat .kver)
+          mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
+
+          cp /bin/busybox initramfs/bin/busybox
+          for cmd in sh ls lsmod insmod sleep cat echo mount dmesg; do
+            ln -s busybox initramfs/bin/$cmd
+          done
+
+          cp kernel/pciem.ko initramfs/lib/modules/
+
+          if [ -f examples/nvme/nvme_card ]; then
+            cp examples/nvme/nvme_card initramfs/bin/
+            ldd examples/nvme/nvme_card \
+              | grep -o '/[^ ]*' \
+              | while read lib; do
+                  [ -f "$lib" ] || continue
+                  mkdir -p "initramfs/$(dirname $lib)"
+                  cp "$lib" "initramfs/$lib"
+                done
+          fi
+
+          for f in guest-nvme-mods/*.ko.zst; do
+            [ -f "$f" ] && zstd -d "$f" -o "initramfs/lib/modules/$(basename "${f%.zst}")"
+          done
+
+          for f in guest-nvme-mods/*.ko.xz; do
+            [ -f "$f" ] && xz -dk --stdout "$f" > "initramfs/lib/modules/$(basename "${f%.xz}")"
+          done
+
+          cp guest-nvme-mods/*.ko initramfs/lib/modules/ 2>/dev/null || true
+
+          cat > initramfs/init << 'EOF'
+          #!/bin/sh
+          mount -t proc  none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev 2>/dev/null || true
+
+          if insmod /lib/modules/pciem.ko \
+              pciem_phys_region=0x80000000:0x200000; then
+            echo ">>> pciem load ok"
+          else
+            echo "RESULT: FAIL"
+            reboot -f
+          fi
+
+          for ko in /lib/modules/hkdf.ko* \
+                    /lib/modules/nvme-keyring.ko* \
+                    /lib/modules/nvme-auth.ko* \
+                    /lib/modules/nvme-core.ko* \
+                    /lib/modules/nvme-fabrics.ko* \
+                    /lib/modules/nvme.ko*; do
+            [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
+          done
+
+          if [ -x /bin/nvme_card ]; then
+            /bin/nvme_card &
+            sleep 3
+            echo "=== dmesg ==="
+            dmesg | tail -50
+            echo "============="
+          fi
+
+          if ls /dev/nvme* 2>/dev/null || ls /sys/class/nvme/ 2>/dev/null | grep -q nvme; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"
+          fi
+
+          reboot -f
+          EOF
+
+          chmod +x initramfs/init
+          (cd initramfs && find . | cpio -H newc -o --quiet | gzip -1 > ../initramfs.cpio.gz)
+          echo "Initramfs size: $(du -sh initramfs.cpio.gz | cut -f1)"
+
+      - name: Run QEMU test
+        run: |
+          sudo chmod a+r vmlinuz-guest
+
+          timeout 120 qemu-system-x86_64 \
+            -machine accel=kvm:tcg \
+            -m 4G \
+            -kernel ./vmlinuz-guest \
+            -initrd initramfs.cpio.gz \
+            -append "console=ttyS0 mem=2G panic=1" \
+            -nographic \
+            -no-reboot \
+            2>&1 | col -b | tee qemu_output.txt || true
+
+          cat qemu_output.txt
+
+          if grep -q "^RESULT: PASS" qemu_output.txt; then
+            echo "QEMU test passed"
+          else
+            echo "QEMU test failed"
+            exit 1
+          fi
+
+  qemu-opensuse:
+    name: QEMU Test (openSUSE Tumbleweed)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull Docker image
+        run: |
+          if ! docker pull registry.opensuse.org/opensuse/tumbleweed; then
+            docker pull opensuse/tumbleweed
+            docker tag opensuse/tumbleweed registry.opensuse.org/opensuse/tumbleweed
+          fi
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 busybox-static cpio zstd xz-utils
+
+      - name: Build module and extract kernel artifacts via Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            registry.opensuse.org/opensuse/tumbleweed \
+            sh -c '
+              set -e
+              zypper --non-interactive refresh
+              zypper --non-interactive install -y \
+                awk bc bison flex gcc git make tar \
+                kernel-default kernel-default-devel libelf-devel \
+                pipewire-devel SDL3-devel
+
+              KDIR=$(ls -d /usr/src/linux-obj/*/* | head -n1)
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+
+              KVER=$(basename $(ls -d /lib/modules/*/ | head -n1) /)
+              echo "$KVER" > /workspace/.kver
+
+              VMLINUZ=$(ls /boot/vmlinuz-* | grep -v rescue | head -n1)
+              cp "$VMLINUZ" /workspace/vmlinuz-guest
+
+              mkdir -p /workspace/guest-nvme-mods
+              find /lib/modules/*/kernel/drivers/nvme -name "*.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+              find /lib/modules/*/kernel/crypto -name "hkdf.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+            '
+
+      - name: Build initramfs
+        run: |
+          KVER=$(cat .kver)
+          mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
+
+          cp /bin/busybox initramfs/bin/busybox
+          for cmd in sh ls lsmod insmod sleep cat echo mount dmesg; do
+            ln -s busybox initramfs/bin/$cmd
+          done
+
+          cp kernel/pciem.ko initramfs/lib/modules/
+
+          if [ -f examples/nvme/nvme_card ]; then
+            cp examples/nvme/nvme_card initramfs/bin/
+            ldd examples/nvme/nvme_card \
+              | grep -o '/[^ ]*' \
+              | while read lib; do
+                  [ -f "$lib" ] || continue
+                  mkdir -p "initramfs/$(dirname $lib)"
+                  cp "$lib" "initramfs/$lib"
+                done
+          fi
+
+          for f in guest-nvme-mods/*.ko.zst; do
+            [ -f "$f" ] && zstd -d "$f" -o "initramfs/lib/modules/$(basename "${f%.zst}")"
+          done
+
+          for f in guest-nvme-mods/*.ko.xz; do
+            [ -f "$f" ] && xz -dk --stdout "$f" > "initramfs/lib/modules/$(basename "${f%.xz}")"
+          done
+
+          cp guest-nvme-mods/*.ko initramfs/lib/modules/ 2>/dev/null || true
+
+          cat > initramfs/init << 'EOF'
+          #!/bin/sh
+          mount -t proc  none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev 2>/dev/null || true
+
+          if insmod /lib/modules/pciem.ko \
+              pciem_phys_region=0x80000000:0x200000; then
+            echo ">>> pciem load ok"
+          else
+            echo "RESULT: FAIL"
+            reboot -f
+          fi
+
+          for ko in /lib/modules/hkdf.ko* \
+                    /lib/modules/nvme-keyring.ko* \
+                    /lib/modules/nvme-auth.ko* \
+                    /lib/modules/nvme-core.ko* \
+                    /lib/modules/nvme-fabrics.ko* \
+                    /lib/modules/nvme.ko*; do
+            [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
+          done
+
+          if [ -x /bin/nvme_card ]; then
+            /bin/nvme_card &
+            sleep 3
+            echo "=== dmesg ==="
+            dmesg | tail -50
+            echo "============="
+          fi
+
+          if ls /dev/nvme* 2>/dev/null || ls /sys/class/nvme/ 2>/dev/null | grep -q nvme; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"
+          fi
+
+          reboot -f
+          EOF
+
+          chmod +x initramfs/init
+          (cd initramfs && find . | cpio -H newc -o --quiet | gzip -1 > ../initramfs.cpio.gz)
+          echo "Initramfs size: $(du -sh initramfs.cpio.gz | cut -f1)"
+
+      - name: Run QEMU test
+        run: |
+          sudo chmod a+r vmlinuz-guest
+
+          timeout 120 qemu-system-x86_64 \
+            -machine accel=kvm:tcg \
+            -m 4G \
+            -kernel ./vmlinuz-guest \
             -initrd initramfs.cpio.gz \
             -append "console=ttyS0 mem=2G panic=1" \
             -nographic \
