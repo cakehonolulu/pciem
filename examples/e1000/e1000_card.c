@@ -72,6 +72,8 @@
 #define E1000_EERD_START (1U << 0)
 #define E1000_EERD_DONE (1U << 4)
 
+#define E1000_EECD_TYPE (1U << 13)
+
 #define E1000_MDIC_READY (1U << 28)
 #define E1000_MDIC_OP_READ (2U << 26)
 #define E1000_MDIC_OP_MASK (3U << 26)
@@ -354,6 +356,7 @@ static void e1000_handle_write(struct e1000_device *dev, struct pciem_event *ev)
                 ((uint32_t)dev->my_mac[3] << 24);
             *(volatile uint32_t *)((uint8_t *)dev->bar0 + E1000_RAH0) =
                 (uint32_t)dev->my_mac[4] | ((uint32_t)dev->my_mac[5] << 8) | (1U << 31);
+            *(volatile uint32_t *)((uint8_t *)dev->bar0 + E1000_EECD) = E1000_EECD_TYPE;
             dev->tx_ring_addr = dev->rx_ring_addr = 0;
             dev->tx_ring_len = dev->rx_ring_len = 0;
             dev->tx_head = 0;
@@ -379,6 +382,8 @@ static void e1000_handle_write(struct e1000_device *dev, struct pciem_event *ev)
 
         if (val & E1000_EECD_REQ)
             val |= E1000_EECD_GNT;
+
+        val |= E1000_EECD_TYPE;
 
         if (!new_cs)
         {
@@ -623,7 +628,7 @@ int main(int argc, char **argv)
     *(volatile uint32_t *)((uint8_t *)dev.bar0 + E1000_RAL0) =
         (uint32_t)mac[0] | ((uint32_t)mac[1] << 8) | ((uint32_t)mac[2] << 16) | ((uint32_t)mac[3] << 24);
     *(volatile uint32_t *)((uint8_t *)dev.bar0 + E1000_RAH0) = (uint32_t)mac[4] | ((uint32_t)mac[5] << 8) | (1U << 31);
-    *(volatile uint32_t *)((uint8_t *)dev.bar0 + E1000_EECD) = 0;
+    *(volatile uint32_t *)((uint8_t *)dev.bar0 + E1000_EECD) = E1000_EECD_TYPE;
 
     dev.raw_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (dev.raw_sock < 0)
