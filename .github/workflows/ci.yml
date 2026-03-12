@@ -23,6 +23,7 @@ jobs:
             flex \
             bison \
             libelf-dev \
+            libpipewire-0.3-dev \
             linux-headers-$(uname -r)
 
       - name: Build
@@ -46,6 +47,7 @@ jobs:
             flex \
             bison \
             libelf-dev \
+            libpipewire-0.3-dev \
             linux-headers-$(uname -r)
 
       - name: Build
@@ -71,7 +73,8 @@ jobs:
             git \
             libelf-dev \
             linux-headers-amd64 \
-            tar
+            tar \
+            libpipewire-0.3-dev
 
       - uses: actions/checkout@v4
 
@@ -105,7 +108,7 @@ jobs:
               zypper --non-interactive refresh &&
               zypper --non-interactive install -y \
                 awk bc bison flex gcc git \
-                kernel-default-devel libelf-devel make tar &&
+                kernel-default-devel libelf-devel make tar pipewire-devel &&
               KDIR=$(ls -d /usr/src/linux-obj/*/* | head -n1) &&
               make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
             '
@@ -129,7 +132,8 @@ jobs:
             linux-headers-$(uname -r) \
             qemu-system-x86 \
             busybox-static \
-            cpio
+            cpio \
+            libpipewire-0.3-dev \
 
       - name: Build
         run: |
