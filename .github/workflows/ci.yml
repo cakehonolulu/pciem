@@ -25,6 +25,13 @@ jobs:
             libelf-dev \
             libpipewire-0.3-dev \
             linux-headers-$(uname -r)
+          # SDL3 is not in ubuntu-latest so let's do questionable stuff here as building SDL3 on CI feels kinda overkill
+          echo "deb http://archive.ubuntu.com/ubuntu plucky universe" | sudo tee /etc/apt/sources.list.d/plucky-universe.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsdl3-dev
+          # Mischief managed, put away the marauders map now 
+          sudo rm /etc/apt/sources.list.d/plucky-universe.list
 
       - name: Build
         run: |
@@ -49,6 +56,13 @@ jobs:
             libelf-dev \
             libpipewire-0.3-dev \
             linux-headers-$(uname -r)
+          # SDL3 is not in Noble so let's do questionable stuff here as building SDL3 on CI feels kinda overkill
+          echo "deb http://archive.ubuntu.com/ubuntu plucky universe" | sudo tee /etc/apt/sources.list.d/plucky-universe.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsdl3-dev
+          # Mischief managed, put away the marauders map now 
+          sudo rm /etc/apt/sources.list.d/plucky-universe.list
 
       - name: Build
         run: |
@@ -74,7 +88,8 @@ jobs:
             libelf-dev \
             linux-headers-amd64 \
             tar \
-            libpipewire-0.3-dev
+            libpipewire-0.3-dev \
+            libsdl3-dev
 
       - uses: actions/checkout@v4
 
@@ -108,7 +123,7 @@ jobs:
               zypper --non-interactive refresh &&
               zypper --non-interactive install -y \
                 awk bc bison flex gcc git \
-                kernel-default-devel libelf-devel make tar pipewire-devel &&
+                kernel-default-devel libelf-devel make tar pipewire-devel SDL3-devel &&
               KDIR=$(ls -d /usr/src/linux-obj/*/* | head -n1) &&
               make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
             '
@@ -134,6 +149,14 @@ jobs:
             busybox-static \
             cpio \
             libpipewire-0.3-dev \
+
+          # SDL3 is not in ubuntu-latest so let's do questionable stuff here as building SDL3 on CI feels kinda overkill
+          echo "deb http://archive.ubuntu.com/ubuntu plucky universe" | sudo tee /etc/apt/sources.list.d/plucky-universe.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsdl3-dev
+          # Mischief managed, put away the marauders map now 
+          sudo rm /etc/apt/sources.list.d/plucky-universe.list
 
       - name: Build
         run: |

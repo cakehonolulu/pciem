@@ -1,0 +1,3 @@
+SUBSYSTEM=="drm", KERNEL=="card*", SUBSYSTEMS=="pci", \
+  ATTRS{vendor}=="0x1234", ATTRS{device}=="0x1111", \
+  TAG-="seat", ENV{ID_SEAT}="seat-bochs-isolated"

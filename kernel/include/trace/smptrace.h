@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  Copyright (C) 2026  Carlos López <carlos.lopezr4096@gmail.com>
- *  Copyright (C) 2026  Joel Bueno <buenocalvachehjoel@gmail.com>
+ *  Copyright (C) 2026  Joel Bueno <buenocalvachejoel@gmail.com>
  */
 #ifndef _PCIEM_SMPTRACE_H
 #define _PCIEM_SMPTRACE_H
