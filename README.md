@@ -12,7 +12,18 @@
   https://cakehonolulu.github.io/docs/pciem/
 </div>
 
-[![CI](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml)
+<div align="center">
+
+| Distribution              | Build Status                                                                 | QEMU Test Status                                                                 |
+|---------------------------|------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
+| **Ubuntu Latest**         | [![Build Ubuntu](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=ubuntu)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Ubuntu](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-ubuntu)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| **Ubuntu 24.04 LTS**      | [![Build Ubuntu LTS](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=ubuntu-lts)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Ubuntu](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-ubuntu)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| **Debian Stable**         | [![Build Debian](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=debian)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Debian](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-debian)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| **Fedora Latest**         | [![Build Fedora](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=fedora)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Fedora](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-fedora)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| **openSUSE Tumbleweed**   | [![Build openSUSE](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=opensuse-tumbleweed)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU openSUSE](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-opensuse)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+
+</div>
+
 
 ## What is PCIem?
 
