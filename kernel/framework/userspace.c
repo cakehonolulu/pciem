@@ -601,6 +601,24 @@ static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct 
         break;
     }
 
+    case PCIEM_CAP_PCIE: {
+        struct pciem_cap_pcie_config pcie = {0};
+        ret = pciem_add_cap_pcie(us->rc, &pcie);
+        break;
+    }
+
+    case PCIEM_CAP_PASID: {
+        struct pciem_cap_pasid_config pasid = {0};
+        ret = pciem_add_cap_pasid(us->rc, &pasid);
+        break;
+    }
+
+    case PCIEM_CAP_PM: {
+        struct pciem_cap_pm_config pm = {0};
+        ret = pciem_add_cap_pm(us->rc, &pm);
+        break;
+    }
+
     default:
         pr_warn("Unsupported capability type: %d\n", cfg.cap_type);
         ret = -ENOTSUPP;

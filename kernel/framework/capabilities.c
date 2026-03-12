@@ -24,6 +24,8 @@ struct pciem_cap_entry
 {
     u32 type;
     u8 offset;
+    u16 ext_offset;
+    bool is_extended;
     u8 size;
     union {
         struct pciem_cap_msi_config msi;
@@ -68,6 +70,7 @@ struct pciem_cap_manager
     struct pciem_cap_entry caps[MAX_PCI_CAPS];
     int num_caps;
     u8 next_offset;
+    u16 ext_next_offset;
 };
 
 static u8 msi_cap_size(struct pciem_cap_msi_config *cfg)
@@ -104,6 +107,7 @@ void pciem_init_cap_manager(struct pciem_root_complex *v)
     }
     v->cap_mgr->num_caps = 0;
     v->cap_mgr->next_offset = 0x40;
+    v->cap_mgr->ext_next_offset = PCI_CFG_SPACE_SIZE;
 }
 
 void pciem_cleanup_cap_manager(struct pciem_root_complex *v)
@@ -284,25 +288,27 @@ int pciem_add_cap_pasid(struct pciem_root_complex *v, struct pciem_cap_pasid_con
 
     cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_PASID;
-    cap->offset = mgr->next_offset;
+    cap->is_extended = true;
+    cap->ext_offset = mgr->ext_next_offset;
+    cap->offset = 0;
     cap->size = 8;
     cap->config.pasid = *cfg;
 
     cap->state.pasid_state.control = 0;
     cap->state.pasid_state.pasid = 0;
 
-    mgr->next_offset += cap->size;
+    mgr->ext_next_offset += cap->size;
     mgr->num_caps++;
 
-    pr_info("Added PASID capability at offset 0x%02x\n", cap->offset);
-
+    pr_info("Added PASID extended capability at ext_offset 0x%03x\n", cap->ext_offset);
     return 0;
 }
 
 void pciem_build_config_space(struct pciem_root_complex *v)
 {
-    int i;
+    int i, j;
     struct pciem_cap_manager *mgr = v->cap_mgr;
+    bool has_std = false;
 
     if (!mgr || mgr->num_caps == 0)
     {
@@ -311,14 +317,32 @@ void pciem_build_config_space(struct pciem_root_complex *v)
         return;
     }
 
-    v->cfg[PCI_CAPABILITY_LIST] = mgr->caps[0].offset;
-    v->cfg[PCI_STATUS] |= (PCI_STATUS_CAP_LIST >> 8);
-
     for (i = 0; i < mgr->num_caps; i++)
     {
         struct pciem_cap_entry *cap = &mgr->caps[i];
-        u8 *cfg = &v->cfg[cap->offset];
-        u8 next_ptr = (i + 1 < mgr->num_caps) ? mgr->caps[i + 1].offset : 0;
+        u8 *cfg;
+        u8 next_ptr = 0;
+
+        if (cap->is_extended)
+            continue;
+
+        if (!has_std)
+        {
+            v->cfg[PCI_CAPABILITY_LIST] = cap->offset;
+            v->cfg[PCI_STATUS] |= (PCI_STATUS_CAP_LIST >> 8);
+            has_std = true;
+        }
+
+        for (j = i + 1; j < mgr->num_caps; j++)
+        {
+            if (!mgr->caps[j].is_extended)
+            {
+                next_ptr = mgr->caps[j].offset;
+                break;
+            }
+        }
+
+        cfg = &v->cfg[cap->offset];
 
         switch (cap->type)
         {
@@ -460,31 +484,54 @@ void pciem_build_config_space(struct pciem_root_complex *v)
             memcpy(&cfg[pos], vsec->data, vsec->vsec_length);
             break;
         }
+        }
+    }
 
+    if (!has_std)
+    {
+        v->cfg[PCI_CAPABILITY_LIST] = 0;
+        v->cfg[PCI_STATUS] &= ~(PCI_STATUS_CAP_LIST >> 8);
+    }
+
+    for (i = 0; i < mgr->num_caps; i++)
+    {
+        struct pciem_cap_entry *cap = &mgr->caps[i];
+        u16 next_ext = 0;
+        u8 *cfg;
+
+        if (!cap->is_extended)
+            continue;
+
+        for (j = i + 1; j < mgr->num_caps; j++)
+        {
+            if (mgr->caps[j].is_extended)
+            {
+                next_ext = mgr->caps[j].ext_offset;
+                break;
+            }
+        }
+
+        cfg = &v->ext_cfg[cap->ext_offset - PCI_CFG_SPACE_SIZE];
+
+        switch (cap->type)
+        {
         case PCIEM_CAP_PASID: {
             struct pciem_cap_pasid_config *pasid = &cap->config.pasid;
-            u16 caps = 0;
-            u8 pos = 0;
+            u16 cap_reg = 0;
 
-            cfg[pos++] = 0x1B;
-            cfg[pos++] = next_ptr;
+            put_unaligned_le32((u32)PCI_EXT_CAP_ID_PASID |
+                               (1u << 16) |
+                               ((u32)next_ext << 20), &cfg[0]);
 
             if (pasid->execute_permission)
-            {
-                caps |= 0x02;
-            }
+                cap_reg |= BIT(1);
             if (pasid->privileged_mode)
-            {
-                caps |= 0x04;
-            }
-            caps |= ((pasid->max_pasid_width - 1) << 8);
-            put_unaligned_le16(caps, &cfg[pos]);
-            pos += 2;
+                cap_reg |= BIT(2);
+            if (pasid->max_pasid_width > 0)
+                cap_reg |= (u16)(pasid->max_pasid_width - 1) << 8;
+            put_unaligned_le16(cap_reg, &cfg[4]);
 
-            put_unaligned_le16(0, &cfg[pos]);
-            pos += 2;
-
-            put_unaligned_le16(0, &cfg[pos]);
+            put_unaligned_le16(0, &cfg[6]);
             break;
         }
         }
@@ -559,12 +606,10 @@ static bool handle_pasid_read(struct pciem_cap_entry *cap, u32 offset, u32 size,
 {
     struct pciem_pasid_state *st = &cap->state.pasid_state;
 
-    if (offset == PCI_PASID_CTRL && size == 2)
-    {
+    if (offset == 6 && size == 2) {
         *value = st->control;
         return true;
     }
-
     return false;
 }
 
@@ -581,25 +626,23 @@ bool pciem_handle_cap_read(struct pciem_root_complex *v, int where, int size, u3
     for (i = 0; i < mgr->num_caps; i++)
     {
         struct pciem_cap_entry *cap = &mgr->caps[i];
+        int cap_base = cap->is_extended ? (int)cap->ext_offset : (int)cap->offset;
+        int cap_offset = where - cap_base;
 
-        if (where >= cap->offset && where < (cap->offset + cap->size))
+        if (where < cap_base || where >= cap_base + cap->size)
+            continue;
+
+        switch (cap->type)
         {
-            int cap_offset = where - cap->offset;
-
-            switch (cap->type)
-            {
-            case PCIEM_CAP_MSI:
-                return handle_msi_read(cap, cap_offset, size, value);
-            case PCIEM_CAP_MSIX:
-                return handle_msix_read(cap, cap_offset, size, value);
-            case PCIEM_CAP_PM:
-                return handle_pm_read(cap, cap_offset, size, value);
-            case PCIEM_CAP_PASID:
-                return handle_pasid_read(cap, cap_offset, size, value);
-            default:
-                break;
-            }
-
+        case PCIEM_CAP_MSI:
+            return handle_msi_read(cap, cap_offset, size, value);
+        case PCIEM_CAP_MSIX:
+            return handle_msix_read(cap, cap_offset, size, value);
+        case PCIEM_CAP_PM:
+            return handle_pm_read(cap, cap_offset, size, value);
+        case PCIEM_CAP_PASID:
+            return handle_pasid_read(cap, cap_offset, size, value);
+        default:
             return false;
         }
     }
@@ -721,25 +764,23 @@ bool pciem_handle_cap_write(struct pciem_root_complex *v, int where, int size, u
     for (i = 0; i < mgr->num_caps; i++)
     {
         struct pciem_cap_entry *cap = &mgr->caps[i];
+        int cap_base = cap->is_extended ? (int)cap->ext_offset : (int)cap->offset;
+        int cap_offset = where - cap_base;
 
-        if (where >= cap->offset && where < (cap->offset + cap->size))
+        if (where < cap_base || where >= cap_base + cap->size)
+            continue;
+
+        switch (cap->type)
         {
-            u32 cap_offset = where - cap->offset;
-
-            switch (cap->type)
-            {
-            case PCIEM_CAP_MSI:
-                return handle_msi_write(cap, cap_offset, size, value);
-            case PCIEM_CAP_MSIX:
-                return handle_msix_write(cap, cap_offset, size, value);
-            case PCIEM_CAP_PM:
-                return handle_pm_write(cap, cap_offset, size, value);
-            case PCIEM_CAP_PASID:
-                return handle_pasid_write(cap, cap_offset, size, value);
-            default:
-                break;
-            }
-
+        case PCIEM_CAP_MSI:
+            return handle_msi_write(cap, cap_offset, size, value);
+        case PCIEM_CAP_MSIX:
+            return handle_msix_write(cap, cap_offset, size, value);
+        case PCIEM_CAP_PM:
+            return handle_pm_write(cap, cap_offset, size, value);
+        case PCIEM_CAP_PASID:
+            return handle_pasid_write(cap, cap_offset, size, value);
+        default:
             return true;
         }
     }

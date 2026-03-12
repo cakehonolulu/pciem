@@ -57,12 +57,21 @@ struct pciem_cap_msix_userspace
 #define PCIEM_CAP_VSEC 4
 #define PCIEM_CAP_PASID 5
 
+struct pciem_cap_pasid_userspace
+{
+    uint8_t  max_pasid_width;
+    uint8_t  execute_permission;
+    uint8_t  privileged_mode;
+    uint8_t  reserved;
+};
+
 struct pciem_cap_config
 {
     uint32_t cap_type;
     union {
         struct pciem_cap_msi_userspace msi;
         struct pciem_cap_msix_userspace msix;
+        struct pciem_cap_pasid_userspace pasid;
     };
 };
 

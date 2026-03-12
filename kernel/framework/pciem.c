@@ -19,6 +19,7 @@
 #include <asm/cacheflush.h>
 #include <asm/io.h>
 #include <asm/tlbflush.h>
+#include <linux/aperture.h>
 #include <linux/atomic.h>
 #include <linux/cleanup.h>
 #include <linux/delay.h>
@@ -428,7 +429,40 @@ static int pciem_conf_read_impl(struct pciem_root_complex *v, int where, int siz
         *value = ~0U;
         return PCIBIOS_DEVICE_NOT_FOUND;
     }
-    if (where < 0 || (where + size) > (int)sizeof(v->cfg))
+
+    if (where >= PCI_CFG_SPACE_SIZE)
+    {
+        int ext_where = where - PCI_CFG_SPACE_SIZE;
+
+        if ((where + size) > PCI_CFG_SPACE_EXP_SIZE)
+        {
+            *value = ~0U;
+            return PCIBIOS_DEVICE_NOT_FOUND;
+        }
+        if (pciem_handle_cap_read(v, where, size, &val))
+        {
+            *value = val;
+            return PCIBIOS_SUCCESSFUL;
+        }
+        switch (size)
+        {
+        case 1:
+            val = v->ext_cfg[ext_where];
+            break;
+        case 2:
+            val = *(u16 *)&v->ext_cfg[ext_where];
+            break;
+        case 4:
+            val = *(u32 *)&v->ext_cfg[ext_where];
+            break;
+        default:
+            val = ~0U;
+        }
+        *value = val;
+        return PCIBIOS_SUCCESSFUL;
+    }
+
+    if (where < 0 || (where + size) > PCI_CFG_SPACE_SIZE)
     {
         *value = ~0U;
         return PCIBIOS_DEVICE_NOT_FOUND;
@@ -438,7 +472,6 @@ static int pciem_conf_read_impl(struct pciem_root_complex *v, int where, int siz
         *value = val;
         return PCIBIOS_SUCCESSFUL;
     }
-
     if (where >= PCI_BASE_ADDRESS_0 &&
         where < PCI_BASE_ADDRESS_0 + (4 * PCI_STD_NUM_BARS) &&
         (where % 4 == 0) &&
@@ -518,16 +551,36 @@ static int pciem_conf_write_impl(struct pciem_root_complex *v, int where, int si
     if (unlikely(v->detaching)) {
         return PCIBIOS_SUCCESSFUL;
     }
-    if (where < 0 || (where + size) > (int)sizeof(v->cfg))
-    {
-        return PCIBIOS_DEVICE_NOT_FOUND;
-    }
 
-    if (pciem_handle_cap_write(v, where, size, value))
+    if (where >= PCI_CFG_SPACE_SIZE)
     {
+        int ext_where = where - PCI_CFG_SPACE_SIZE;
+
+        if ((where + size) > PCI_CFG_SPACE_EXP_SIZE)
+            return PCIBIOS_DEVICE_NOT_FOUND;
+        if (pciem_handle_cap_write(v, where, size, value))
+            return PCIBIOS_SUCCESSFUL;
+        switch (size)
+        {
+        case 1:
+            v->ext_cfg[ext_where] = (u8)value;
+            break;
+        case 2:
+            *(u16 *)&v->ext_cfg[ext_where] = (u16)value;
+            break;
+        case 4:
+            *(u32 *)&v->ext_cfg[ext_where] = (u32)value;
+            break;
+        default:
+            return PCIBIOS_FUNC_NOT_SUPPORTED;
+        }
         return PCIBIOS_SUCCESSFUL;
     }
 
+    if (where < 0 || (where + size) > PCI_CFG_SPACE_SIZE)
+        return PCIBIOS_DEVICE_NOT_FOUND;
+    if (pciem_handle_cap_write(v, where, size, value))
+        return PCIBIOS_SUCCESSFUL;
     if (where >= PCI_BASE_ADDRESS_0 &&
         where < PCI_BASE_ADDRESS_0 + (4 * PCI_STD_NUM_BARS) &&
         (where % 4 == 0) &&

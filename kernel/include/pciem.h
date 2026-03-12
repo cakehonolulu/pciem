@@ -93,6 +93,8 @@ struct pciem_root_complex
     struct pci_bus *root_bus;
     u8 cfg[256];
 
+    u8 ext_cfg[PCI_CFG_SPACE_EXP_SIZE - PCI_CFG_SPACE_SIZE];
+
     enum pciem_bus_mode bus_mode;
 
     union {
