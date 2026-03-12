@@ -89,12 +89,28 @@ graph LR
 
 # Examples
 
-## NVME Controller with 1GB disk
+## Bochs BGA (drm) Card
 
-The following example basically shows an NVME controller with 1GB of storage attached to. User can freely format, mount, create and remove files from the memory.
+A Bochs BGA-compatible (bochs-drm) card that can be driven by userspace utilities such as Weston; uses SDL3.
 
-https://github.com/user-attachments/assets/6cc9ef8b-72f9-4a0b-b54e-6fbdde7c7589
+https://github.com/user-attachments/assets/d2f7abe4-aef4-4d3a-a30b-ab7ec793faed
 
+## NVME Controller
+
+NVME controller with 1GB of storage attached to. User can freely format, mount, create and remove files from the memory.
+
+https://github.com/user-attachments/assets/29ce370a-7317-4fd4-9d1d-c3e868e1083d
+
+## Intel HDA Card
+
+ICH6-compatible emulation model that can play samples in conjunction with pipewire.
+
+_NOTE: Slight audio crackling only heard on recording, works fine otherwise_
+
+https://github.com/user-attachments/assets/7264a18c-6fcb-46c4-acde-9531b0be7ff6
+
+<details>
+  <summary>Legacy example(s)</summary>
 ## ProtoPCIem card
 
 The card is programmed entirely in QEMU (State machine for the card, basically), which does all the userspace initialization and command handling from the real driver running in the host.
@@ -116,6 +132,11 @@ Can run software-rendered DOOM (Submits finished frames with DMA to the card whi
 </p>
 
 </details>
+
+</p>
+  
+</details>
+
 
 ## License
 
