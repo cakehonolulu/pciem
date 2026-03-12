@@ -30,7 +30,7 @@ static int translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
     iova_end = PAGE_ALIGN(guest_iova + len);
     max_pages = (iova_end - iova_start) >> PAGE_SHIFT;
 
-    pr_info("DMA: translate: 0x%llx (0x%llx - 0x%llx) (%lu pages)",
+    pr_debug_ratelimited("translate: 0x%llx (0x%llx - 0x%llx) (%lu pages)",
             guest_iova, iova_start, iova_end, max_pages);
 
     pages = kmalloc_array(max_pages, sizeof(phys_addr_t), GFP_KERNEL);
@@ -82,7 +82,7 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
     if (ret)
         return ret;
 
-    pr_info("DMA: read:  src=0x%llx dst=0x%lx len=0x%lx (%u pages) PASID %u\n",
+    pr_debug_ratelimited("read:  src=0x%llx dst=0x%lx len=0x%lx (%u pages) PASID %u\n",
             guest_iova, (size_t)dst, len, num_pages, pasid);
 
     for (i = 0; i < num_pages; ++i) {
@@ -96,7 +96,7 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
             return -ENOMEM;
         }
 
-        pr_info("DMA: read%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
+        pr_debug_ratelimited("read%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
                 i, (size_t)src + src_offset, (size_t)dst + dst_offset,
                 chunk_len, pages[i] + src_offset);
 
@@ -126,7 +126,7 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
     if (ret)
         return ret;
 
-    pr_info("DMA: write:  src=0x%lx dst=0x%llx len=0x%lx (%u pages) PASID %u\n",
+    pr_debug_ratelimited("write:  src=0x%lx dst=0x%llx len=0x%lx (%u pages) PASID %u\n",
             (size_t)src, guest_iova, len, num_pages, pasid);
 
     for (i = 0; i < num_pages; ++i) {
@@ -140,7 +140,7 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
             return -ENOMEM;
         }
 
-        pr_info("DMA: write%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
+        pr_debug_ratelimited("write%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
                 i, (size_t)src + src_offset, (size_t)dst + dst_offset,
                 chunk_len, pages[i] + dst_offset);
 
