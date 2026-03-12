@@ -120,9 +120,15 @@ _NOTE: Slight audio crackling only heard on recording, works fine otherwise_
 
 https://github.com/user-attachments/assets/7264a18c-6fcb-46c4-acde-9531b0be7ff6
 
+## Intel E1000 Card
+
+A pretty naive implementation of the E1000 card. Supports communications redirection to/from your real NIC. Can also use Wi-Fi but it's less stable.
+
+https://github.com/user-attachments/assets/b6b9862c-349c-49da-8a79-4769dfa31915
+
 <details>
   <summary>Legacy example(s)</summary>
-## ProtoPCIem card
+<h2>ProtoPCIem card</h2>
 
 The card is programmed entirely in QEMU (State machine for the card, basically), which does all the userspace initialization and command handling from the real driver running in the host.
 
