@@ -15,9 +15,15 @@
 typedef atomic_int atomic_t;
 #endif
 
+/** Mask to extract the bus mode bits from the flags field. */
 #define PCIEM_CREATE_FLAG_BUS_MODE_MASK     0x00000003
+
+/** Create a virtual PCIe bus owned entirely by PCIem. */
 #define PCIEM_CREATE_FLAG_BUS_MODE_VIRTUAL  0x00000000
+
+/** Attach to an existing physical PCIe bus. */
 #define PCIEM_CREATE_FLAG_BUS_MODE_ATTACH   0x00000001
+
 
 struct pciem_create_device
 {
@@ -114,6 +120,12 @@ struct pciem_response
     uint32_t reserved;
 };
 
+/**
+ * Parameters for PCIEM_IOCTL_INJECT_IRQ.
+ *
+ * @param vector    MSI/MSI-X vector number to inject into the guest.
+ * @param reserved  Must be zero.
+ */
 struct pciem_irq_inject
 {
     uint32_t vector;
