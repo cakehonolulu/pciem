@@ -254,6 +254,22 @@ struct pciem_trace_bar
 #define PCIEM_RING_SIZE 256
 #define PCIEM_MAX_IRQFDS 32
 
+/**
+ * Lock-free single-producer/single-consumer event ring shared between the
+ * kernel and userspace.
+ *
+ * The kernel writes events by advancing @head; userspace consumes them by
+ * advancing @tail. Each counter is cache-line padded.
+ * The ring is mapped read-only into userspace via mmap on the PCIem fd.
+ *
+ * @param head    Write index, owned by the kernel. Incremented atomically
+ *                after each event is committed.
+ * @param _pad1   Cache-line padding to isolate @head from @tail.
+ * @param tail    Read index, owned by userspace. Incremented after each event
+ *                is consumed.
+ * @param _pad2   Cache-line padding to isolate @tail from the event array.
+ * @param events  Circular buffer of PCIEM_RING_SIZE events.
+ */
 struct pciem_shared_ring
 {
     atomic_t head;
