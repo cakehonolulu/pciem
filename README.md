@@ -1,5 +1,7 @@
 <div align="center">
   <img src="resources/icon_crop.svg" width="300" height="300">
+  <br>
+  <h3>PCIem</h3>
 </div>
 
 <div align="center">
