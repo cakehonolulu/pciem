@@ -4,7 +4,10 @@
  *   Author(s): Joel Bueno <buenocalvachejoel@gmail.com>
  *              Carlos López <carlos.lopezr4096@gmail.com>
  */
- #include "pool.h"
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": pool: " fmt
+
+#include "pool.h"
 
 #include <linux/slab.h>
 
@@ -32,27 +35,27 @@ phys_addr_t pciem_pool_alloc(resource_size_t size)
     guard(spinlock)(&pciem_pool.lock);
 
     if (!pciem_pool.total_size) {
-        pr_err("pool: No physical memory pool configured.\n");
-        pr_err("pool: Pass pciem_phys_region=0xADDR:0xSIZE at insmod.\n");
+        pr_err("No physical memory pool configured.\n");
+        pr_err("Pass pciem_phys_region=0xADDR:0xSIZE at insmod.\n");
         return 0;
     }
 
     if (!size || (size & (size - 1))) {
-        pr_err("pool: Allocation size 0x%llx is not a power of 2\n", (u64)size);
+        pr_err("Allocation size 0x%llx is not a power of 2\n", (u64)size);
         return 0;
     }
 
     aligned_offset = ALIGN(pciem_pool.next_offset, size);
 
     if (aligned_offset + size > pciem_pool.total_size) {
-        pr_err("pool: Out of pool memory.\n");
+        pr_err("Out of pool memory.\n");
         return 0;
     }
 
     addr = pciem_pool.base + aligned_offset;
     pciem_pool.next_offset = aligned_offset + size;
 
-    pr_info("pool: Allocated 0x%llx bytes at phys 0x%llx (pool offset 0x%llx)\n",
+    pr_info("Allocated 0x%llx bytes at phys 0x%llx (pool offset 0x%llx)\n",
             (u64)size, (u64)addr, (u64)aligned_offset);
     return addr;
 }
@@ -64,7 +67,7 @@ int pciem_pool_init(const char *phys_region)
     struct resource *res = &pciem_pool.res;
 
     if (!phys_region || !*phys_region) {
-        pr_info("pool: No phys_region specified\n");
+        pr_info("No phys_region specified\n");
         return 0;
     }
 
@@ -74,12 +77,12 @@ int pciem_pool_init(const char *phys_region)
         sscanf(phys_region, "%llx:%llx",
                (unsigned long long *)&base,
                (unsigned long long *)&size) != 2) {
-        pr_err("pool: Cannot parse phys_region=\"%s\"\n", phys_region);
+        pr_err("Cannot parse phys_region=\"%s\"\n", phys_region);
         return -EINVAL;
     }
 
     if (!size || (size & (size - 1))) {
-        pr_err("pool: Region size 0x%llx must be a power of 2\n", (u64)size);
+        pr_err("Region size 0x%llx must be a power of 2\n", (u64)size);
         return -EINVAL;
     }
 
@@ -87,7 +90,7 @@ int pciem_pool_init(const char *phys_region)
     res->end = base + size - 1;
 
     if (insert_resource(&iomem_resource, res)) {
-        pr_err("pool: Failed to claim [0x%llx-0x%llx] in iomem\n",
+        pr_err("Failed to claim [0x%llx-0x%llx] in iomem\n",
                (u64)base, (u64)(base + size - 1));
         kfree(res);
         return -EBUSY;
@@ -97,7 +100,7 @@ int pciem_pool_init(const char *phys_region)
     pciem_pool.total_size = size;
     pciem_pool.next_offset = 0;
 
-    pr_info("pool: BAR pool ready [0x%llx – 0x%llx]\n",
+    pr_info("BAR pool ready [0x%llx – 0x%llx]\n",
             (u64)base, (u64)(base + size - 1));
     return 0;
 }
@@ -110,7 +113,7 @@ void pciem_pool_exit(void)
     release_resource(&pciem_pool.res);
 
     pciem_pool.total_size = 0;
-    pr_info("pool: BAR pool released\n");
+    pr_info("BAR pool released\n");
 }
 
 int pciem_pool_insert(struct resource *res)
