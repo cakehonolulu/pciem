@@ -91,6 +91,10 @@ static int poison_pte(struct smptrace_ctx *ctx, unsigned long va,
 	unsigned int level;
 	struct smptrace_pte *orig, *tmp;
 	int ret;
+	unsigned long flags;
+	struct list_head local_ptes;
+
+	INIT_LIST_HEAD(&local_ptes);
 
 	while (remain > 0) {
 		ptep = lookup_address(va, &level);
@@ -130,24 +134,31 @@ static int poison_pte(struct smptrace_ctx *ctx, unsigned long va,
 		default:
 			pr_err("unexpected page level 0x%x for VA 0x%llx\n",
 			       orig->level, (u64)va);
-			return -EINVAL;
+			kfree(orig);
+			ret = -EINVAL;
+			goto fail;
 		}
 
 		pr_info("poisoned PTE for VA=%lx", va);
 
 		remain -= level2size(orig->level);
 		va += level2size(orig->level);
-		list_add_tail(&orig->list, &ctx->ptes);
+		list_add_tail(&orig->list, &local_ptes);
 	}
+
+	spin_lock_irqsave(&ctx->lock, flags);
+	list_splice_tail(&local_ptes, &ctx->ptes);
+	spin_unlock_irqrestore(&ctx->lock, flags);
 
 	__flush_tlb();
 	return 0;
+
 
 fail:
 	/* Free items, but do not bother to unpoison the PTEs. Let our
 	 * caller detect the error, and simply return NULL to the caller
 	 * of ioremap() */
-	list_for_each_entry_safe(orig, tmp, &ctx->ptes, list) {
+	list_for_each_entry_safe(orig, tmp, &local_ptes, list) {
 		list_del(&orig->list);
 		kfree(orig);
 	}
@@ -175,16 +186,27 @@ static void restore_pte(struct smptrace_ctx *ctx, unsigned long va,
 	pud_t *pudp;
 	int64_t remain = len;
 	struct smptrace_pte *orig;
+	unsigned long flags;
 
 	while (remain > 0) {
 		ptep = lookup_address(va, &level);
-		if (!ptep)
-			return;
+		if (!ptep) {
+			remain -= PAGE_SIZE;
+			va += PAGE_SIZE;
+			continue;
+		}
 
+		spin_lock_irqsave(&ctx->lock, flags);
 		orig = __find_pte(ctx, va);
+		if (orig)
+			list_del(&orig->list);
+		spin_unlock_irqrestore(&ctx->lock, flags);
+
 		if (!orig) {
-			pr_err("could not find PTE for va=0x%lx", va);
-			return;
+			pr_err("could not find PTE for va=0x%lx\n", va);
+			remain -= level2size(level);
+			va += level2size(level);
+			continue;
 		}
 		if (orig->level != level)
 			pr_warn("PTE level mismatch (prev=%u found=%u)", orig->level, level);
@@ -203,6 +225,7 @@ static void restore_pte(struct smptrace_ctx *ctx, unsigned long va,
 			break;
 		default:
 			pr_err("unexpected page level %u for VA 0x%lx\n", level, va);
+			kfree(orig);
 			return;
 		}
 
@@ -210,8 +233,6 @@ static void restore_pte(struct smptrace_ctx *ctx, unsigned long va,
 
 		remain -= level2size(orig->level);
 		va += level2size(orig->level);
-
-		list_del(&orig->list);
 		kfree(orig);
 	}
 
@@ -238,39 +259,38 @@ static int __exit_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs)
 	struct smptrace_ctx *ctx = container_of(rp, struct smptrace_ctx, ioremap_krp);
 	struct ioremap_args *args = (struct ioremap_args *)ri->data;
 	unsigned long va = regs_return_value(regs);
+	struct smptrace_map *map;
+	unsigned long flags;
 
 	if (args->pa < ctx->pa || args->pa >= ctx->pa + ctx->len)
 		return 0;
 
-	if (atomic_long_cmpxchg(&ctx->traced_va, 0, va)) {
-		pr_warn_ratelimited("duplicate ioremap(0x%llx), skipping", args->pa);
+	map = kzalloc(sizeof(*map), GFP_ATOMIC);
+	if (!map)
 		return 0;
-	}
+
+	map->va = va;
+	map->len = args->len;
+	map->pa = args->pa;
 
 	pr_info("poisoning VA=0x%lx:%lx (PA = 0x%llx:%lx)",
-	        va, args->len, ctx->pa, ctx->len);
+	        va, args->len, (unsigned long long)ctx->pa, ctx->len);
 
-	/*
-	 * Before the PTE is poisoned, traced_len will only be read by
-	 * __enter_badarea(), which will not intercept anything until this
-	 * kretprobe is done (since nobody will fault on ctx->traced_va, as it is
-	 * not visible yet), so we can set it safely now.
-	 */
-	WRITE_ONCE(ctx->traced_len, args->len);
+	spin_lock_irqsave(&ctx->lock, flags);
+	list_add_tail(&map->list, &ctx->maps);
+	spin_unlock_irqrestore(&ctx->lock, flags);
 
-	/*
-	 * Now poison the PTE(s). If we fail, return NULL to the caller of ioremap().
-	 * To avoid leaking memory, iounmap() the address. Do the iounmap() *after*
-	 * setting traced_va to 0, so that our own iounmap() kprobe does not
-	 * interfere.
-	 */
 	if (poison_pte(ctx, va, args->len)) {
+		spin_lock_irqsave(&ctx->lock, flags);
+		list_del(&map->list);
+		spin_unlock_irqrestore(&ctx->lock, flags);
+		kfree(map);
+
 		regs_set_return_value(regs, 0);
-		atomic_long_set_release(&ctx->traced_va, 0);
 		iounmap((void __iomem *)va);
 
 		pr_warn("failed to poison VA=0x%lx:%lx (PA = 0x%llx:%lx)",
-		        va, args->len, ctx->pa, ctx->len);
+		        va, args->len, args->pa, args->len);
 	}
 
 	return 0;
@@ -280,15 +300,25 @@ static int __enter_iounmap(struct kprobe *kp, struct pt_regs *regs)
 {
 	struct smptrace_ctx *ctx = container_of(kp, struct smptrace_ctx, iounmap_kp);
 	unsigned long va = regs_get_kernel_argument(regs, 0);
-	unsigned long to_clear = va;
+	struct smptrace_map *map, *found = NULL;
+	unsigned long flags;
 
-	/* If cmpxchg fails it means we are not tracking this VA, so ignore */
-	if (!atomic_long_try_cmpxchg(&ctx->traced_va, &va, 0))
+	spin_lock_irqsave(&ctx->lock, flags);
+	list_for_each_entry(map, &ctx->maps, list) {
+		if (map->va == va) {
+			found = map;
+			list_del(&map->list);
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&ctx->lock, flags);
+
+	if (!found)
 		return 0;
 
-	pr_info("restoring VA=0x%lx (PA = 0x%llx)", to_clear, ctx->pa);
-	restore_pte(ctx, to_clear, ctx->traced_len);
-	WRITE_ONCE(ctx->traced_len, 0);
+	pr_info("restoring VA=0x%lx (PA = 0x%llx)", found->va, (unsigned long long)found->pa);
+	restore_pte(ctx, found->va, found->len);
+	kfree(found);
 	return 0;
 }
 
@@ -315,24 +345,15 @@ static void __fill_io_notif(struct smptrace_io *io, const u8 *data, u32 size,
 	}
 }
 
-static void emulate_read(struct smptrace_ctx *ctx, u64 addr, u32 size, u8 *dst)
+static void emulate_read(struct smptrace_ctx *ctx, struct smptrace_map *map,
+                         u64 addr, u32 size, u8 *dst)
 {
 	u64 off;
-	unsigned long traced_len = READ_ONCE(ctx->traced_len);
 	struct smptrace_io io;
 
-	/*
-	 * ctx->traced_va is only set to NULL in two situations:
-	 *
-	 *  - Someone iounmap()s it, at which point that is a bug in the
-	 *    driver, as there is a pending access (which we hooked via #PF).
-	 *  - Our driver is close()d, which waits until all kprobes (including
-	 *    this one) stop running.
-	 *
-	 * So ctx->traced_va is always safe to read.
-	 */
-	off  = addr - atomic_long_read(&ctx->traced_va);
-	BUG_ON(off >= traced_len || off + size > traced_len);
+	/* Calculate offset into our tracked PA base */
+	off = (map->pa - ctx->pa) + (addr - map->va);
+	BUG_ON(off >= ctx->len || off + size > ctx->len);
 	memcpy_fromio(dst, ctx->shadow_va + off, size);
 
 	if (ctx->notif.read) {
@@ -341,17 +362,16 @@ static void emulate_read(struct smptrace_ctx *ctx, u64 addr, u32 size, u8 *dst)
 	}
 }
 
-static void emulate_write(struct smptrace_ctx *ctx, u64 addr, u32 size,
-                          const u8 *src)
+static void emulate_write(struct smptrace_ctx *ctx, struct smptrace_map *map,
+                          u64 addr, u32 size, const u8 *src)
 {
 	u64 off;
-	unsigned long traced_len = READ_ONCE(ctx->traced_len);
 	struct smptrace_io io = {0};
 
-	off  = addr - atomic_long_read(&ctx->traced_va);
-	BUG_ON(off >= traced_len || off + size > traced_len);
-	if (!ctx->stop_writes)
-		memcpy_toio(ctx->shadow_va + off, src, size);
+	off = (map->pa - ctx->pa) + (addr - map->va);
+	BUG_ON(off >= ctx->len || off + size > ctx->len);
+
+	memcpy_toio(ctx->shadow_va + off, src, size);
 
 	pr_debug("Write @ 0x%llx:%x", off, size);
 
@@ -371,7 +391,8 @@ static int decode_pf_instr(struct pt_regs *regs, struct insn *insn)
 	return insn_decode_kernel(insn, buf);
 }
 
-static int emulate_pf_instruction(struct smptrace_ctx *ctx, struct pt_regs *regs)
+static int emulate_pf_instruction(struct smptrace_ctx *ctx, struct smptrace_map *map,
+                                  struct pt_regs *regs)
 {
 	struct insn insn;
 	enum insn_mmio_type mmio;
@@ -411,35 +432,35 @@ static int emulate_pf_instruction(struct smptrace_ctx *ctx, struct pt_regs *regs
 
 	switch (mmio) {
 	case INSN_MMIO_WRITE:
-		emulate_write(ctx, addr, len, (u8 *)data);
+		emulate_write(ctx, map, addr, len, (u8 *)data);
 		break;
 	case INSN_MMIO_WRITE_IMM:
 		BUG_ON(len > 4);
-		emulate_write(ctx, addr, len, (u8 *)insn.immediate1.bytes);
+		emulate_write(ctx, map, addr, len, (u8 *)insn.immediate1.bytes);
 		break;
 	case INSN_MMIO_READ:
 		/* Zero-extend for 32-bit operation */
 		if (len == 4)
 			*data = 0;
-		emulate_read(ctx, addr, len, (u8 *)data);
+		emulate_read(ctx, map, addr, len, (u8 *)data);
 		break;
 	case INSN_MMIO_READ_ZERO_EXTEND:
 		memset(data, 0, insn.opnd_bytes);
-		emulate_read(ctx, addr, len, (u8 *)data);
+		emulate_read(ctx, map, addr, len, (u8 *)data);
 		break;
 	case INSN_MMIO_READ_SIGN_EXTEND:
 		/* Sign extend based on operand size */
 		if (len == 1) {
 			u8 val;
-			emulate_read(ctx, addr, len, &val);
+			emulate_read(ctx, map, addr, len, &val);
 			sign_byte = (val & 0x80) ? 0xff : 0x00;
 		} else {
 			u16 val;
-			emulate_read(ctx, addr, len, (u8 *)&val);
+			emulate_read(ctx, map, addr, len, (u8 *)&val);
 			sign_byte = (val & 0x8000) ? 0xff : 0x00;
 		}
 		memset(data, sign_byte, insn.opnd_bytes);
-		emulate_read(ctx, addr, len, (u8 *)data);
+		emulate_read(ctx, map, addr, len, (u8 *)data);
 		break;
 	case INSN_MMIO_MOVS:
 		pr_warn_ratelimited("unhandled MOVS instruction ip=0x%lx", regs->ip);
@@ -462,19 +483,32 @@ static int __enter_badarea(struct kprobe *kp, struct pt_regs *regs)
 	struct smptrace_ctx *ctx = container_of(kp, struct smptrace_ctx, badarea_kp);
 	struct pt_regs *pf_regs = (struct pt_regs *)regs_get_kernel_argument(regs, 0);
 	unsigned long pf_va = regs_get_kernel_argument(regs, 2);
-	unsigned long traced_va = atomic_long_read(&ctx->traced_va);
-	unsigned long traced_len = READ_ONCE(ctx->traced_len);
+	struct smptrace_map *tmp_map, map_copy = {0};
+	unsigned long flags;
+	bool found = false;
 	int ret;
 
-	if (!traced_va || pf_va < traced_va || pf_va >= traced_va + traced_len)
+	/* Find the matching memory mapping. We copy it by value so we don't hold the spinlock 
+	   during the entire emulate_pf_instruction sequence (which triggers user callbacks). */
+	spin_lock_irqsave(&ctx->lock, flags);
+	list_for_each_entry(tmp_map, &ctx->maps, list) {
+		if (pf_va >= tmp_map->va && pf_va < tmp_map->va + tmp_map->len) {
+			map_copy = *tmp_map;
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&ctx->lock, flags);
+
+	if (!found)
 		return 0;
 
 	if (this_cpu_xchg(*ctx->in_pf, true)) {
-		pr_warn("reentrant #PF on 0x%lx, ignoring", traced_va);
+		pr_warn("reentrant #PF on 0x%lx, ignoring", pf_va);
 		return 0;
 	}
 
-	ret = emulate_pf_instruction(ctx, pf_regs);
+	ret = emulate_pf_instruction(ctx, &map_copy, pf_regs);
 	this_cpu_write(*ctx->in_pf, false);
 
 	/* Update return address to skip the whole function we hooked */
@@ -526,6 +560,8 @@ int smptrace_init(struct smptrace_ctx *ctx)
 	int ret;
 
 	INIT_LIST_HEAD(&ctx->ptes);
+	INIT_LIST_HEAD(&ctx->maps);
+	spin_lock_init(&ctx->lock);
 
 	ctx->in_pf = alloc_percpu_gfp(bool, GFP_KERNEL_ACCOUNT);
 	if (!ctx->in_pf)
@@ -562,25 +598,33 @@ int smptrace_init(struct smptrace_ctx *ctx)
 
 static void smptrace_deactivate(struct smptrace_ctx *ctx)
 {
-	unsigned long va;
+	struct smptrace_map *map, *tmp;
+	unsigned long flags;
 
 	/* First, stop hooks on ioremap and iounmap so everyone stops updating
 	 * ctx->traced_va */
 	unregister_kretprobe(&ctx->ioremap_krp);
 	unregister_kprobe(&ctx->iounmap_kp);
 
-	/* Restore the VA, if we had captured any, so we stop getting #PFs */
-	va = atomic_long_xchg(&ctx->traced_va, 0);
-	if (va) {
-		restore_pte(ctx, va, ctx->traced_len);
-		WRITE_ONCE(ctx->traced_len, 0);
-	}
-
 	/* Stop #PF hook now that we shouldn't be hitting #PF */
 	unregister_kprobe(&ctx->badarea_kp);
 
-	iounmap(ctx->shadow_va);
-	ctx->shadow_va = 0;
+	spin_lock_irqsave(&ctx->lock, flags);
+	list_for_each_entry_safe(map, tmp, &ctx->maps, list) {
+		list_del(&map->list);
+		spin_unlock_irqrestore(&ctx->lock, flags);
+
+		restore_pte(ctx, map->va, map->len);
+		kfree(map);
+
+		spin_lock_irqsave(&ctx->lock, flags);
+	}
+	spin_unlock_irqrestore(&ctx->lock, flags);
+
+	if (ctx->shadow_va) {
+		iounmap(ctx->shadow_va);
+		ctx->shadow_va = NULL;
+	}
 }
 
 void smptrace_destroy(struct smptrace_ctx *ctx)

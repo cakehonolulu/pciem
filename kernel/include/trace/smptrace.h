@@ -41,6 +41,14 @@ struct smptrace_pte {
 	unsigned int level;
 };
 
+/* An active traced ioremap region */
+struct smptrace_map {
+	struct list_head list;
+	unsigned long va;
+	unsigned long len;
+	resource_size_t pa;
+};
+
 struct smptrace_ctx {
 	/* User hooks */
 	struct smptrace_notifier notif;
@@ -55,17 +63,18 @@ struct smptrace_ctx {
 
 	/*** Do not touch below here ***/
 
+	/* Protects structural modifications to the lists */
+	spinlock_t lock;
+
 	/* Un-poisoned PTEs */
 	struct list_head ptes;
+	/* Active mapped VA regions */
+	struct list_head maps;
 
 	/* Tracing hooks */
 	struct kretprobe ioremap_krp;
 	struct kprobe iounmap_kp;
 	struct kprobe badarea_kp;
-
-	/* Address and size of the VA the tracee mapped */
-	atomic_long_t traced_va;
-	unsigned long traced_len;
 
 	/* Address of the shadow memory we maintain. Size is ctx->len */
 	void __iomem *shadow_va;
