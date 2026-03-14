@@ -120,7 +120,6 @@ static int pciem_pool_init(void)
     resource_size_t size;
     struct resource *res;
 
-    memset(&pciem_pool, 0, sizeof(pciem_pool));
     spin_lock_init(&pciem_pool.lock);
 
     if (!pciem_phys_region || !*pciem_phys_region) {
