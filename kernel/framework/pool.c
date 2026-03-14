@@ -28,7 +28,8 @@ phys_addr_t pciem_pool_alloc(resource_size_t size)
 {
     phys_addr_t addr;
     resource_size_t aligned_offset;
-    unsigned long flags;
+
+    guard(spinlock)(&pciem_pool.lock);
 
     if (!pciem_pool.total_size) {
         pr_err("pool: No physical memory pool configured.\n");
@@ -41,20 +42,15 @@ phys_addr_t pciem_pool_alloc(resource_size_t size)
         return 0;
     }
 
-    spin_lock_irqsave(&pciem_pool.lock, flags);
-
     aligned_offset = ALIGN(pciem_pool.next_offset, size);
 
     if (aligned_offset + size > pciem_pool.total_size) {
-        spin_unlock_irqrestore(&pciem_pool.lock, flags);
         pr_err("pool: Out of pool memory.\n");
         return 0;
     }
 
     addr = pciem_pool.base + aligned_offset;
     pciem_pool.next_offset = aligned_offset + size;
-
-    spin_unlock_irqrestore(&pciem_pool.lock, flags);
 
     pr_info("pool: Allocated 0x%llx bytes at phys 0x%llx (pool offset 0x%llx)\n",
             (u64)size, (u64)addr, (u64)aligned_offset);
