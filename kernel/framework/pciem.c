@@ -117,24 +117,24 @@ phys_addr_t pciem_pool_alloc(resource_size_t size)
 }
 EXPORT_SYMBOL(pciem_pool_alloc);
 
-static int pciem_pool_init(void)
+static int pciem_pool_init(const char *phys_region)
 {
     phys_addr_t base;
     resource_size_t size;
     struct resource *res;
 
-    if (!pciem_phys_region || !*pciem_phys_region) {
-        pr_info("pool: No pciem_phys_region specified\n");
+    if (!phys_region || !*phys_region) {
+        pr_info("pool: No phys_region specified\n");
         return 0;
     }
 
-    if (sscanf(pciem_phys_region, "0x%llx:0x%llx",
+    if (sscanf(phys_region, "0x%llx:0x%llx",
                (unsigned long long *)&base,
                (unsigned long long *)&size) != 2 &&
-        sscanf(pciem_phys_region, "%llx:%llx",
+        sscanf(phys_region, "%llx:%llx",
                (unsigned long long *)&base,
                (unsigned long long *)&size) != 2) {
-        pr_err("pool: Cannot parse pciem_phys_region=\"%s\"\n", pciem_phys_region);
+        pr_err("pool: Cannot parse phys_region=\"%s\"\n", phys_region);
         return -EINVAL;
     }
 
@@ -1138,7 +1138,7 @@ static int __init pciem_init(void)
     int ret;
     pr_info("init: pciem framework loading\n");
 
-    ret = pciem_pool_init();
+    ret = pciem_pool_init(pciem_phys_region);
     if (ret) return ret;
 
     ret = pciem_userspace_init();
