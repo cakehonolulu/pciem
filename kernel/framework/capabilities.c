@@ -178,8 +178,7 @@ int pciem_add_cap_msix(struct pciem_root_complex *v, struct pciem_cap_msix_confi
     cap->offset = mgr->next_offset;
     cap->size = 12;
     cap->config.msix = *cfg;
-
-    cap->state.msix_state.control = 0;
+    cap->state.msix_state.control = (cfg->table_size - 1) & 0x7FF;
 
     mgr->next_offset += cap->size;
     mgr->num_caps++;
@@ -710,7 +709,7 @@ static bool handle_msix_write(struct pciem_cap_entry *cap, u32 offset, u32 size,
 
     if (offset == PCI_MSIX_FLAGS && size == 2)
     {
-        st->control = value & 0xC7FF;
+        st->control = (st->control & 0x07FF) | (value & 0xC000);
         pr_info("MSI-X Control written: 0x%04x (Enable: %d)\n", value, !!(value & PCI_MSIX_FLAGS_ENABLE));
         return true;
     }
