@@ -73,7 +73,10 @@ static void pciem_fixup_bridge_domain(struct pci_host_bridge *bridge,
 #endif
 }
 
-struct pciem_mempool pciem_pool;
+struct pciem_mempool pciem_pool = {
+    .lock = __SPIN_LOCK_UNLOCKED(pciem_pool.lock),
+};
+
 EXPORT_SYMBOL(pciem_pool);
 
 phys_addr_t pciem_pool_alloc(resource_size_t size)
@@ -119,8 +122,6 @@ static int pciem_pool_init(void)
     phys_addr_t base;
     resource_size_t size;
     struct resource *res;
-
-    spin_lock_init(&pciem_pool.lock);
 
     if (!pciem_phys_region || !*pciem_phys_region) {
         pr_info("pool: No pciem_phys_region specified\n");
