@@ -85,7 +85,7 @@ phys_addr_t pciem_pool_alloc(resource_size_t size)
     resource_size_t aligned_offset;
     unsigned long flags;
 
-    if (!pciem_pool.initialized) {
+    if (!pciem_pool.total_size) {
         pr_err("pool: No physical memory pool configured.\n");
         pr_err("pool: Pass pciem_phys_region=0xADDR:0xSIZE at insmod.\n");
         return 0;
@@ -163,7 +163,6 @@ static int pciem_pool_init(void)
     pciem_pool.total_size = size;
     pciem_pool.next_offset = 0;
     pciem_pool.res = res;
-    pciem_pool.initialized = true;
 
     pr_info("pool: BAR pool ready [0x%llx – 0x%llx]\n",
             (u64)base, (u64)(base + size - 1));
@@ -172,7 +171,7 @@ static int pciem_pool_init(void)
 
 static void pciem_pool_exit(void)
 {
-    if (!pciem_pool.initialized)
+    if (!pciem_pool.total_size)
         return;
 
     if (pciem_pool.res) {
@@ -181,7 +180,7 @@ static void pciem_pool_exit(void)
         pciem_pool.res = NULL;
     }
 
-    pciem_pool.initialized = false;
+    pciem_pool.total_size = 0;
     pr_info("pool: BAR pool released\n");
 }
 

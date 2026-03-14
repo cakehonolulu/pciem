@@ -40,7 +40,6 @@ struct pciem_mempool {
     resource_size_t     next_offset;
     spinlock_t          lock;
     struct resource     *res;
-    bool                initialized;
 };
 
 extern struct pciem_mempool pciem_pool;
