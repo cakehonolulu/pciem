@@ -40,12 +40,8 @@ struct pciem_mempool {
     resource_size_t     next_offset;
     spinlock_t          lock;
     struct resource     *res;
-    bool                initialized;
 };
 
-extern struct pciem_mempool pciem_pool;
-
-phys_addr_t pciem_pool_alloc(resource_size_t size);
 
 enum pciem_bus_mode {
     PCIEM_BUS_MODE_VIRTUAL_ROOT = 0,

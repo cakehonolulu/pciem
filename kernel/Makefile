@@ -6,7 +6,8 @@ pciem-objs := framework/pciem.o \
               framework/capabilities.o \
               framework/p2p.o \
               framework/dma.o \
-              framework/userspace.o
+              framework/userspace.o \
+              framework/pool.o
 
 pciem-objs += trace/smptrace.o \
               trace/arch/x86/lib/insn.o \
