@@ -13,11 +13,15 @@ struct pciem_mempool {
     resource_size_t     total_size;
     resource_size_t     next_offset;
     spinlock_t          lock;
-    struct resource     *res;
+    struct resource     res;
 };
 
 static struct pciem_mempool pciem_pool = {
     .lock = __SPIN_LOCK_UNLOCKED(pciem_pool.lock),
+    .res = {
+        .name = "PCIem BAR pool",
+        .flags = IORESOURCE_MEM,
+    },
 };
 
 phys_addr_t pciem_pool_alloc(resource_size_t size)
@@ -61,7 +65,7 @@ int pciem_pool_init(const char *phys_region)
 {
     phys_addr_t base;
     resource_size_t size;
-    struct resource *res;
+    struct resource *res = &pciem_pool.res;
 
     if (!phys_region || !*phys_region) {
         pr_info("pool: No phys_region specified\n");
@@ -83,14 +87,8 @@ int pciem_pool_init(const char *phys_region)
         return -EINVAL;
     }
 
-    res = kzalloc(sizeof(*res), GFP_KERNEL);
-    if (!res)
-        return -ENOMEM;
-
-    res->name = "PCIem BAR pool";
     res->start = base;
     res->end = base + size - 1;
-    res->flags = IORESOURCE_MEM;
 
     if (insert_resource(&iomem_resource, res)) {
         pr_err("pool: Failed to claim [0x%llx-0x%llx] in iomem\n",
@@ -102,7 +100,6 @@ int pciem_pool_init(const char *phys_region)
     pciem_pool.base = base;
     pciem_pool.total_size = size;
     pciem_pool.next_offset = 0;
-    pciem_pool.res = res;
 
     pr_info("pool: BAR pool ready [0x%llx – 0x%llx]\n",
             (u64)base, (u64)(base + size - 1));
@@ -114,11 +111,7 @@ void pciem_pool_exit(void)
     if (!pciem_pool.total_size)
         return;
 
-    if (pciem_pool.res) {
-        release_resource(pciem_pool.res);
-        kfree(pciem_pool.res);
-        pciem_pool.res = NULL;
-    }
+    release_resource(&pciem_pool.res);
 
     pciem_pool.total_size = 0;
     pr_info("pool: BAR pool released\n");
@@ -126,5 +119,5 @@ void pciem_pool_exit(void)
 
 int pciem_pool_insert(struct resource *res)
 {
-    return insert_resource(pciem_pool.res, res);
+    return insert_resource(&pciem_pool.res, res);
 }
