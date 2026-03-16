@@ -92,6 +92,37 @@ static u8 msi_cap_size(struct pciem_cap_msi_config *cfg)
     return size;
 }
 
+static struct pciem_cap_entry *
+pciem_cap_manager_find(struct pciem_cap_manager *mgr, u32 type)
+{
+    int i;
+
+    for (i = 0; i < mgr->num_caps; i++)
+        if (mgr->caps[i].type == type)
+            return &mgr->caps[i];
+
+    return NULL;
+}
+
+/*
+    From PCIe Base Spec §6.1.4:
+
+    Legacy Endpoints supports either 32 or 64-bit Message Address(es).
+    New(er) PCI Express Endpoints are *required* to be 64-bit.
+
+    Check if the PCIe Endpoint is trying to use an erroneus 32-bit config.
+*/
+static int pciem_check_msi_address_width(u8 device_type, bool has_64bit)
+{
+    if (device_type == PCI_EXP_TYPE_ENDPOINT && !has_64bit) {
+        pr_err("MSI: PCIe Endpoint (device_type=0x%x) must use 64-bit address format\n",
+               device_type);
+        return -EINVAL;
+    }
+ 
+    return 0;
+}
+
 void pciem_init_cap_manager(struct pciem_root_complex *v)
 {
     guard(write_lock)(&v->cap_lock);
@@ -136,13 +167,26 @@ void pciem_cleanup_cap_manager(struct pciem_root_complex *v)
 int pciem_add_cap_msi(struct pciem_root_complex *v, struct pciem_cap_msi_config *cfg)
 {
     struct pciem_cap_manager *mgr;
+    struct pciem_cap_entry *pcie_cap;
     struct pciem_cap_entry *cap;
+    int ret;
 
     guard(write_lock)(&v->cap_lock);
 
     mgr = v->cap_mgr;
     if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
         return -ENOMEM;
+
+    pcie_cap = pciem_cap_manager_find(mgr, PCIEM_CAP_PCIE);
+    if (!pcie_cap) {
+        pr_err("MSI: PCIe capability must be added before MSI capability\n");
+        return -EINVAL;
+    }
+
+    ret = pciem_check_msi_address_width(
+            pcie_cap->config.pcie.device_type, cfg->has_64bit);
+    if (ret)
+        return ret;
 
     cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_MSI;
@@ -219,13 +263,23 @@ int pciem_add_cap_pm(struct pciem_root_complex *v, struct pciem_cap_pm_config *c
 int pciem_add_cap_pcie(struct pciem_root_complex *v, struct pciem_cap_pcie_config *cfg)
 {
     struct pciem_cap_manager *mgr;
+    struct pciem_cap_entry *msi_cap;
     struct pciem_cap_entry *cap;
+    int ret;
 
     guard(write_lock)(&v->cap_lock);
 
     mgr = v->cap_mgr;
     if (!mgr || mgr->num_caps >= MAX_PCI_CAPS)
         return -ENOMEM;
+
+    msi_cap = pciem_cap_manager_find(mgr, PCIEM_CAP_MSI);
+    if (msi_cap) {
+        ret = pciem_check_msi_address_width(
+                cfg->device_type, msi_cap->config.msi.has_64bit);
+        if (ret)
+            return ret;
+    }
 
     cap = &mgr->caps[mgr->num_caps];
     cap->type = PCIEM_CAP_PCIE;
