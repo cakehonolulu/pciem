@@ -12,6 +12,7 @@
 
 #include <asm/cacheflush.h>
 #include <linux/atomic.h>
+#include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
@@ -87,21 +88,34 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
 
     for (i = 0; i < num_pages; ++i) {
         void *src;
+        bool ram_page;
         size_t src_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
         size_t chunk_len = min_t(size_t, PAGE_SIZE - src_offset, len - dst_offset);
 
-        src = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
-        if (!src) {
-            kfree(pages);
-            return -ENOMEM;
+        ram_page = pfn_valid(PHYS_PFN(pages[i]));
+
+        if (ram_page) {
+            src = phys_to_virt(pages[i]);
+        } else {
+            src = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
+            if (!src) {
+                kfree(pages);
+                return -ENOMEM;
+            }
         }
+
+        dma_sync_single_for_cpu(&v->pciem_pdev->dev,
+                                (dma_addr_t)(pages[i] + src_offset),
+                                chunk_len, DMA_FROM_DEVICE);
 
         pr_debug_ratelimited("read%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
                 i, (size_t)src + src_offset, (size_t)dst + dst_offset,
                 chunk_len, pages[i] + src_offset);
 
         memcpy(dst + dst_offset, src + src_offset, chunk_len);
-        memunmap(src);
+
+        if (!ram_page)
+            memunmap(src);
 
         dst_offset += chunk_len;
     }
@@ -131,13 +145,20 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
 
     for (i = 0; i < num_pages; ++i) {
         void *dst;
+        bool ram_page;
         unsigned int dst_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
         size_t chunk_len = min_t(size_t, PAGE_SIZE - dst_offset, len - src_offset);
 
-        dst = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
-        if (!dst) {
-            kfree(pages);
-            return -ENOMEM;
+        ram_page = pfn_valid(PHYS_PFN(pages[i]));
+
+        if (ram_page) {
+            dst = phys_to_virt(pages[i]);
+        } else {
+            dst = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
+            if (!dst) {
+                kfree(pages);
+                return -ENOMEM;
+            }
         }
 
         pr_debug_ratelimited("write%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
@@ -145,7 +166,14 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
                 chunk_len, pages[i] + dst_offset);
 
         memcpy(dst + dst_offset, src + src_offset, chunk_len);
-        memunmap(dst);
+
+        dma_sync_single_for_device(&v->pciem_pdev->dev,
+                                   (dma_addr_t)(pages[i] + dst_offset),
+                                   chunk_len, DMA_TO_DEVICE);
+
+        if (!ram_page)
+            memunmap(dst);
+
         src_offset += chunk_len;
     }
 
