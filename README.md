@@ -1,5 +1,7 @@
 <div align="center">
   <img src="resources/icon.svg" width="300" height="300">
+  <br>
+  <h2>PCIem</h2>
 </div>
 
 <div align="center">
@@ -11,19 +13,6 @@
 
   https://cakehonolulu.github.io/docs/pciem/
 </div>
-
-<div align="center">
-
-| Distribution              | Build Status                                                                 | QEMU Test Status                                                                 |
-|---------------------------|------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
-| **Ubuntu Latest**         | [![Build Ubuntu](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=ubuntu)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Ubuntu](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-ubuntu)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| **Ubuntu 24.04 LTS**      | [![Build Ubuntu LTS](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=ubuntu-lts)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Ubuntu](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-ubuntu)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| **Debian Stable**         | [![Build Debian](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=debian)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Debian](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-debian)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| **Fedora Latest**         | [![Build Fedora](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=fedora)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU Fedora](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-fedora)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| **openSUSE Tumbleweed**   | [![Build openSUSE](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=opensuse-tumbleweed)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![QEMU openSUSE](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml/badge.svg?job=qemu-opensuse)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-
-</div>
-
 
 ## What is PCIem?
 
@@ -97,6 +86,27 @@ graph LR
 - Linux Kernel Version: `6.6`
 - C Compiler: `gcc-12`
 - Ubuntu Version: `24.04 LTS`
+
+
+---------
+
+### CI Status
+
+#### amd64
+
+| Distribution | Build | QEMU Test |
+|:---|:---:|:---:|
+| Ubuntu Latest | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Ubuntu%20latest)&style=for-the-badge&logo=ubuntu&logoColor=white&label=build&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Ubuntu%20Latest)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| Ubuntu 24.04 LTS | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Ubuntu%20LTS)&style=for-the-badge&logo=ubuntu&logoColor=white&label=build&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Ubuntu%2024.04%20LTS)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| Debian Stable | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Debian%20stable)&style=for-the-badge&logo=debian&logoColor=white&label=build&labelColor=A81D33)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Debian%20Stable)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=A81D33)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| Fedora Latest | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Fedora%20Latest)&style=for-the-badge&logo=fedora&logoColor=white&label=build&labelColor=294172)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Fedora%20Latest)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=294172)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| openSUSE Tumbleweed | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(openSUSE%20Tumbleweed)&style=for-the-badge&logo=opensuse&logoColor=white&label=build&labelColor=2D5F0F)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(openSUSE%20Tumbleweed)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=2D5F0F)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+
+#### aarch64
+
+| Distribution | Build | QEMU Test |
+|:---|:---:|:---:|
+| Ubuntu 24.04 LTS | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=aarch64%20build%20(Ubuntu%20latest)&style=for-the-badge&logo=ubuntu&logoColor=white&label=build&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=aarch64%20QEMU%20Test%20(Ubuntu%20LTS)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
 
 # Examples
 
