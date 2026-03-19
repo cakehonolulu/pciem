@@ -1242,6 +1242,8 @@ static int pciem_ioctl_trace_bar(struct pciem_userspace_state *us,
     struct pciem_trace_bar req;
     struct pciem_bar_info *bar;
     struct pciem_tracer *tracer;
+    resource_size_t pa;
+    unsigned long len;
     int ret;
 
     if (copy_from_user(&req, arg, sizeof(req)))
@@ -1250,31 +1252,55 @@ static int pciem_ioctl_trace_bar(struct pciem_userspace_state *us,
     if (req.bar_index >= PCI_STD_NUM_BARS)
         return -EINVAL;
 
-    guard(write_lock)(&us->rc->bars_lock);
+    /*
+     * Due to how register_kprobe() works on aarch64 (And surely on other ISAs other
+     * than i386/amd64) we can't hold the lock while we do most of the smptrace setup
+     * since it ends up calling stop_machine() which can sleep.
+     *
+     * If we do so, we'll get the following warning and the kprobe won't be registered:
+     * "smptrace_init: Cannot register kprobe, not in atomic context"
+    */
+    {
+        guard(write_lock)(&us->rc->bars_lock);
 
-    bar = &us->rc->bars[req.bar_index];
-    tracer = &us->tracers[req.bar_index];
-    if (tracer->us)
-        return -EINVAL;
+        tracer = &us->tracers[req.bar_index];
+        if (tracer->us) {
+            pr_err("Already tracing BAR%u, cannot start another trace session", req.bar_index);
+            return -EINVAL;
+        }
 
-    if (!bar->carved_start || !bar->size) {
-        pr_warn("cannot trace BAR%u, not registered", req.bar_index);
-        return -ENXIO;
+        bar = &us->rc->bars[req.bar_index];
+        if (!bar->carved_start || !bar->size) {
+            pr_warn("cannot trace BAR%u, not registered", req.bar_index);
+            return -ENXIO;
+        }
+
+        pa  = bar->carved_start;
+        len = bar->size;
+
+        memset(tracer, 0, sizeof(*tracer));
+        tracer->ctx.opaque = req.bar_index;
+        tracer->ctx.pa = pa;
+        tracer->ctx.len = len;
+        if (req.flags & PCIEM_TRACE_WRITES)
+            tracer->ctx.notif.write = pciem_notif_write;
+        if (req.flags & PCIEM_TRACE_READS)
+            tracer->ctx.notif.read  = pciem_notif_read;
+        tracer->ctx.stop_writes = req.flags & PCIEM_TRACE_STOP_WRITES;
     }
 
-    memset(tracer, 0, sizeof(*tracer));
-    tracer->ctx.opaque = req.bar_index;
-    tracer->ctx.pa = bar->carved_start;
-    tracer->ctx.len = bar->size;
-    if (req.flags & PCIEM_TRACE_WRITES)
-        tracer->ctx.notif.write = pciem_notif_write;
-    if (req.flags & PCIEM_TRACE_READS)
-        tracer->ctx.notif.read = pciem_notif_read;
-    tracer->ctx.stop_writes = req.flags & PCIEM_TRACE_STOP_WRITES;
     ret = smptrace_init(&tracer->ctx);
     if (ret)
         return ret;
-    tracer->us = us;
+
+    /*
+     * After we're done with the previous critical sections, it's fine to
+     * hold the lock again.
+     */
+    {
+        guard(write_lock)(&us->rc->bars_lock);
+        tracer->us = us;
+    }
 
     pr_info("Beginning tracing on BAR%u (PA = 0x%llx)",
             req.bar_index, bar->carved_start);

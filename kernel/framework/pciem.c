@@ -44,6 +44,7 @@
 #include <linux/vmalloc.h>
 #include <linux/idr.h>
 #include <linux/workqueue.h>
+#include <linux/irqdomain.h>
 
 static char *pciem_phys_region = "";
 module_param(pciem_phys_region, charp, 0444);
@@ -156,7 +157,7 @@ int pciem_trigger_msi(struct pciem_root_complex *v, int vector)
         return -EINVAL;
     }
 
-    v->pending_msi_irq = irq;
+    atomic_set(&v->pending_msi_irq, irq);
     irq_work_queue(&v->msi_irq_work);
     return 0;
 }
@@ -165,7 +166,7 @@ EXPORT_SYMBOL(pciem_trigger_msi);
 static void pciem_msi_irq_work_func(struct irq_work *work)
 {
     struct pciem_root_complex *v = container_of(work, struct pciem_root_complex, msi_irq_work);
-    unsigned int irq = v->pending_msi_irq;
+    unsigned int irq = atomic_read(&v->pending_msi_irq);
     if (irq)
     {
         generic_handle_irq(irq);
@@ -1013,6 +1014,15 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
 
     pciem_cleanup_bars(v);
 
+    if (v->intx_virq) {
+        irq_dispose_mapping(v->intx_virq);
+        v->intx_virq = 0;
+    }
+    if (v->intx_domain) {
+        irq_domain_remove(v->intx_domain);
+        v->intx_domain = NULL;
+    }
+
     if (v->shared_bridge_pdev)
     {
         platform_device_unregister(v->shared_bridge_pdev);
@@ -1084,7 +1094,7 @@ struct pciem_root_complex *pciem_alloc_root_complex(void)
     /* Essential initialization that must happen */
     init_irq_work(&v->msi_irq_work, pciem_msi_irq_work_func);
     INIT_WORK(&v->activation_work, pciem_activation_work_func);
-    v->pending_msi_irq = 0;
+    atomic_set(&v->pending_msi_irq, 0);
     memset(v->bars, 0, sizeof(v->bars));
 
     pr_info("Allocated pciem root complex\n");
