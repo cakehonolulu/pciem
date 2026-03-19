@@ -9,11 +9,14 @@ pciem-objs := framework/pciem.o \
               framework/userspace.o \
               framework/pool.o
 
-pciem-objs += trace/smptrace.o \
-              trace/arch/x86/lib/insn.o \
+pciem-objs += trace/smptrace.o
+
+ifeq ($(ARCH),x86)
+pciem-objs += trace/arch/x86/lib/insn.o \
               trace/arch/x86/lib/insn-eval.o \
               trace/arch/x86/lib/inat.o
 ccflags-y += -I$(src)/trace/arch/x86/include/asm
+endif
 
 obj-m += pciem.o
 
