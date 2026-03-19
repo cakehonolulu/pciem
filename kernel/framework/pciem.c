@@ -1014,6 +1014,15 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
 
     pciem_cleanup_bars(v);
 
+    if (v->intx_virq) {
+        irq_dispose_mapping(v->intx_virq);
+        v->intx_virq = 0;
+    }
+    if (v->intx_domain) {
+        irq_domain_remove(v->intx_domain);
+        v->intx_domain = NULL;
+    }
+
     if (v->shared_bridge_pdev)
     {
         platform_device_unregister(v->shared_bridge_pdev);
