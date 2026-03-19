@@ -44,6 +44,7 @@
 #include <linux/vmalloc.h>
 #include <linux/idr.h>
 #include <linux/workqueue.h>
+#include <linux/irqdomain.h>
 
 static char *pciem_phys_region = "";
 module_param(pciem_phys_region, charp, 0444);
