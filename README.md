@@ -5,13 +5,7 @@
 </div>
 
 <div align="center">
-  A Linux kernel framework enabling synthetic userspace PCIe device emulation.
-</div>
-
-<div align="center">
-  https://cakehonolulu.github.io/introducing-pciem/
-
-  https://cakehonolulu.github.io/docs/pciem/
+  A Linux kernel framework enabling synthetic userspace PCIe device emulation. | <a href="https://cakehonolulu.github.io/docs/pciem">Documentation</a>
 </div>
 
 ## What is PCIem?
@@ -173,6 +167,5 @@ Can run software-rendered DOOM (Submits finished frames with DMA to the card whi
 ## References
 
 - Blog post: https://cakehonolulu.github.io/introducing-pciem/
-- Documentation: https://cakehonolulu.github.io/docs/pciem/
 - Hackernews post: https://news.ycombinator.com/item?id=46689065
 - PCI Express specification: https://pcisig.com/specifications
