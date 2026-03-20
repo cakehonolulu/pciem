@@ -37,7 +37,11 @@ struct smptrace_notifier {
 struct smptrace_pte {
 	struct list_head list;
 	unsigned long va;
+#ifndef CONFIG_RISCV
 	pteval_t pte;
+#else
+    u64 pte;
+#endif
 	unsigned int level;
 };
 
@@ -60,6 +64,16 @@ struct smptrace_ctx {
 	unsigned long len;
 	/* Whether to emulate writes into the BAR */
 	bool stop_writes;
+
+#ifdef CONFIG_RISCV
+    /*
+     * Snapshotted SATP value within kernel context.
+	 *
+	 * Helps us avoid pulling certain symbols that would
+	 * make modpost complain.
+     */
+    unsigned long riscv_kernel_satp;
+#endif
 
 	/*** Do not touch below here ***/
 
