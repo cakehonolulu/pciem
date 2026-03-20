@@ -226,7 +226,7 @@ static void pciem_tracing_destroy(struct pciem_userspace_state *us)
 
 static void pciem_tracing_init(struct pciem_userspace_state *us)
 {
-    memset(&us->tracers, 0, ARRAY_SIZE(us->tracers));
+    memset(&us->tracers, 0, ARRAY_SIZE(us->tracers) * sizeof(us->tracers[0]));
 }
 
 static int pciem_shared_ring_alloc(struct pciem_userspace_state *us)
