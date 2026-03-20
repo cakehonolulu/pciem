@@ -1310,6 +1310,8 @@ jobs:
 
       - name: Run QEMU test
         run: |
+          sudo chmod a+r vmlinuz-guest
+
           # Higher timeout due to not having KVM
           timeout 300 qemu-system-riscv64 \
             -machine virt \
