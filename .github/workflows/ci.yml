@@ -183,6 +183,39 @@ jobs:
           KDIR=$(ls -d /lib/modules/*/build | head -n1)
           make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
 
+
+  riscv64-ubuntu-lts:
+    name: riscv64 build (Ubuntu LTS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable RISC-V binfmt
+        # Grab packages in the least paiful way
+        run: docker run --privileged --rm tonistiigi/binfmt --install riscv64
+
+      - name: Build under RISC-V
+        run: |
+          cat > riscv64-build.sh << 'SCRIPT'
+          set -e
+          apt-get update
+          apt-get install -y build-essential bc flex bison libelf-dev \
+            linux-headers-generic libpipewire-0.3-dev
+          echo "deb http://ports.ubuntu.com/ubuntu-ports plucky universe" \
+            > /etc/apt/sources.list.d/plucky-universe.list
+          apt-get update
+          apt-get install -y libsdl3-dev
+          rm /etc/apt/sources.list.d/plucky-universe.list
+          KDIR=$(ls -d /usr/src/linux-headers-*-generic | head -n1)
+          make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+          SCRIPT
+          docker run --rm --platform linux/riscv64 \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ubuntu:24.04 \
+            sh /workspace/riscv64-build.sh
+
   amd64-qemu-ubuntu-latest:
     name: amd64 QEMU Test (Ubuntu Latest)
     runs-on: ubuntu-latest
@@ -1107,5 +1140,193 @@ jobs:
             echo "QEMU ARM64 test passed"
           else
             echo "QEMU ARM64 test failed"
+            exit 1
+          fi
+
+  riscv64-qemu-ubuntu-lts:
+    name: riscv64 QEMU Test (Ubuntu 24.04)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          # qemu-system-misc carries qemu-system-riscv64
+          sudo apt-get install -y \
+            qemu-system-misc \
+            device-tree-compiler \
+            cpio zstd xz-utils
+
+      - name: Enable RISC-V binfmt
+        run: docker run --privileged --rm tonistiigi/binfmt --install riscv64
+
+      - name: Build module and extract kernel artifacts
+        run: |
+          docker run --rm --platform linux/riscv64 \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ubuntu:24.04 \
+            sh -c '
+              set -e
+              apt-get update
+              echo "deb http://ports.ubuntu.com/ubuntu-ports plucky universe" \
+                > /etc/apt/sources.list.d/plucky.list
+              apt-get update
+              apt-get install -y build-essential bc flex bison libelf-dev \
+                linux-image-generic linux-headers-generic \
+                busybox-static \
+                libpipewire-0.3-dev libsdl3-dev
+              rm /etc/apt/sources.list.d/plucky.list
+
+              KDIR=$(ls -d /usr/src/linux-headers-*-generic | head -n1)
+              make all -j $(nproc) KDIR=$KDIR KCFLAGS=-Werror
+
+              KVER=$(basename $(ls -d /lib/modules/*/ | head -n1) /)
+              echo "$KVER" > /workspace/.kver
+
+              VMLINUZ=$(ls /boot/vmlinuz-*-generic | head -n1)
+              cp "$VMLINUZ" /workspace/vmlinuz-guest
+
+              mkdir -p /workspace/guest-nvme-mods
+              find /lib/modules/*/kernel/drivers/nvme -name "*.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+              find /lib/modules/*/kernel/crypto -name "hkdf.ko*" 2>/dev/null \
+                | xargs -I{} cp {} /workspace/guest-nvme-mods/ || true
+
+              cp /bin/busybox /workspace/busybox-riscv64
+
+              if [ -f examples/nvme/nvme_card ]; then
+                cp examples/nvme/nvme_card /workspace/nvme_card-riscv64
+                ldd examples/nvme/nvme_card | grep -o "/[^ ]*" \
+                  | while read lib; do
+                      [ -f "$lib" ] || continue
+                      mkdir -p "/workspace/nvme_card_libs/$(dirname "$lib")"
+                      cp "$lib" "/workspace/nvme_card_libs/$lib"
+                    done
+              fi
+            '
+
+      - name: Generate DTB with reserved memory
+        # Same trick as with ARM64
+        run: |
+          qemu-system-riscv64 \
+            -machine virt,dumpdtb=base.dtb \
+            -m 2G \
+            -nographic 2>/dev/null || true
+
+          cat > reserve-mem.dts << 'DTSEOF'
+          /dts-v1/;
+          /plugin/;
+          / {
+              fragment@0 {
+                  target-path = "/";
+                  __overlay__ {
+                      reserved-memory {
+                          #address-cells = <2>;
+                          #size-cells = <2>;
+                          ranges;
+                          pciem_pool: pciem_pool@f0000000 {
+                              reg = <0x0 0xf0000000 0x0 0x10000000>;
+                              no-map;
+                          };
+                      };
+                  };
+              };
+          };
+          DTSEOF
+
+          dtc -I dts -O dtb -o reserve-mem.dtbo reserve-mem.dts
+          fdtoverlay -i base.dtb -o guest.dtb reserve-mem.dtbo
+
+      - name: Build initramfs
+        run: |
+          mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
+
+          cp busybox-riscv64 initramfs/bin/busybox
+          for cmd in sh ls lsmod insmod sleep cat echo mount dmesg; do
+            ln -s busybox initramfs/bin/$cmd
+          done
+
+          cp kernel/pciem.ko initramfs/lib/modules/
+
+          if [ -f nvme_card-riscv64 ]; then
+            cp nvme_card-riscv64 initramfs/bin/nvme_card
+            [ -d nvme_card_libs ] && cp -a nvme_card_libs/. initramfs/
+          fi
+
+          for f in guest-nvme-mods/*.ko.zst; do
+            [ -f "$f" ] && zstd -d "$f" -o "initramfs/lib/modules/$(basename "${f%.zst}")"
+          done
+          for f in guest-nvme-mods/*.ko.xz; do
+            [ -f "$f" ] && xz -dk --stdout "$f" > "initramfs/lib/modules/$(basename "${f%.xz}")"
+          done
+          cp guest-nvme-mods/*.ko initramfs/lib/modules/ 2>/dev/null || true
+
+          cat > initramfs/init << 'EOF'
+          #!/bin/sh
+          mount -t proc  none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev 2>/dev/null || true
+
+          if insmod /lib/modules/pciem.ko \
+              pciem_phys_region=0xf0000000:0x10000000; then
+            echo ">>> pciem load ok"
+          else
+            echo "RESULT: FAIL"
+            reboot -f
+          fi
+
+          for ko in /lib/modules/hkdf.ko* \
+                    /lib/modules/nvme-keyring.ko* \
+                    /lib/modules/nvme-auth.ko* \
+                    /lib/modules/nvme-core.ko* \
+                    /lib/modules/nvme-fabrics.ko* \
+                    /lib/modules/nvme.ko*; do
+            [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
+          done
+
+          if [ -x /bin/nvme_card ]; then
+            /bin/nvme_card &
+            sleep 3
+            echo "=== dmesg ==="
+            dmesg | tail -60
+            echo "============="
+          fi
+
+          if ls /dev/nvme* 2>/dev/null || ls /sys/class/nvme/ 2>/dev/null | grep -q nvme; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"
+          fi
+
+          reboot -f
+          EOF
+
+          chmod +x initramfs/init
+          (cd initramfs && find . | cpio -H newc -o --quiet | gzip -1 > ../initramfs.cpio.gz)
+          echo "Initramfs size: $(du -sh initramfs.cpio.gz | cut -f1)"
+
+      - name: Run QEMU test
+        run: |
+          # Higher timeout due to not having KVM
+          timeout 300 qemu-system-riscv64 \
+            -machine virt \
+            -m 2G \
+            -kernel vmlinuz-guest \
+            -initrd initramfs.cpio.gz \
+            -dtb guest.dtb \
+            -append "console=ttyS0 earlycon panic=1" \
+            -nographic \
+            -no-reboot \
+            2>&1 | col -b | tee qemu_output.txt || true
+
+          cat qemu_output.txt
+
+          if grep -q "^RESULT: PASS" qemu_output.txt; then
+            echo "QEMU RISC-V test passed"
+          else
+            echo "QEMU RISC-V test failed"
             exit 1
           fi
