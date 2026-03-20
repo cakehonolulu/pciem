@@ -37,7 +37,11 @@ struct smptrace_notifier {
 struct smptrace_pte {
 	struct list_head list;
 	unsigned long va;
+#ifndef CONFIG_RISCV
 	pteval_t pte;
+#else
+	u64 pte;
+#endif
 	unsigned int level;
 };
 
