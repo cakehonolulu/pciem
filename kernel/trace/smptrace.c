@@ -1351,7 +1351,11 @@ static void restore_pte(struct smptrace_ctx *ctx, unsigned long va,
 		kfree(orig);
 	}
 
-	on_each_cpu(riscv_smptrace_sfence, NULL, 1);
+	// No need to fully flush the TLB since the restored mapping should be valid
+	if (irqs_disabled())
+		asm volatile("sfence.vma" ::: "memory");
+	else
+		on_each_cpu(riscv_smptrace_sfence, NULL, 1);
 }
 
 static const unsigned short riscv_gpr_offsets[32] = {
