@@ -79,28 +79,23 @@ graph LR
 
 - Linux Kernel Version: `6.6`
 - C Compiler: `gcc-12`
-- Ubuntu Version: `24.04 LTS`
+- Architecture: `amd64/i386`, `aarch64`, `riscv`
 
+> **_aarch64 note:_**  Tested w/Raspberry Pi 4b, device-tree (No ACPI)
+
+> **_riscv note:_**  Tested w/VisionFive 2 (Device-tree) and Muse Pi Pro (Device-tree and ACPI)
 
 ---------
 
 ### CI Status
 
-#### amd64
-
-| Distribution | Build | QEMU Test |
-|:---|:---:|:---:|
-| Ubuntu Latest | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Ubuntu%20latest)&style=for-the-badge&logo=ubuntu&logoColor=white&label=build&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Ubuntu%20Latest)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| Ubuntu 24.04 LTS | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Ubuntu%20LTS)&style=for-the-badge&logo=ubuntu&logoColor=white&label=build&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Ubuntu%2024.04%20LTS)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| Debian Stable | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Debian%20stable)&style=for-the-badge&logo=debian&logoColor=white&label=build&labelColor=A81D33)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Debian%20Stable)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=A81D33)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| Fedora Latest | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Fedora%20Latest)&style=for-the-badge&logo=fedora&logoColor=white&label=build&labelColor=294172)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Fedora%20Latest)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=294172)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-| openSUSE Tumbleweed | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(openSUSE%20Tumbleweed)&style=for-the-badge&logo=opensuse&logoColor=white&label=build&labelColor=2D5F0F)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(openSUSE%20Tumbleweed)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=2D5F0F)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
-
-#### aarch64
-
-| Distribution | Build | QEMU Test |
-|:---|:---:|:---:|
-| Ubuntu 24.04 LTS | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=aarch64%20build%20(Ubuntu%20latest)&style=for-the-badge&logo=ubuntu&logoColor=white&label=build&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) | [![](https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=aarch64%20QEMU%20Test%20(Ubuntu%20LTS)&style=for-the-badge&logo=qemu&logoColor=white&label=qemu&labelColor=E95420)](https://github.com/cakehonolulu/pciem/actions/workflows/ci.yml) |
+| Distribution | <img src="https://img.shields.io/badge/-amd64-ED1C24?style=flat-square&logo=amd&logoColor=white"/> <img src="https://img.shields.io/badge/-i386-0071C5?style=flat-square&logo=intel&logoColor=white"/> | <img src="https://img.shields.io/badge/-aarch64-0091BD?style=flat-square&logo=arm&logoColor=white"/> | <img src="https://img.shields.io/badge/-riscv-283272?style=flat-square&logo=riscv&logoColor=white"/> |
+| :--- | :---: | :---: | :---: |
+| **Ubuntu Latest** | <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Ubuntu%20latest)&style=flat-square&logo=ubuntu&logoColor=white&label=build&labelColor=E95420"/> <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Ubuntu%20Latest)&style=flat-square&logo=qemu&logoColor=white&label=qemu&labelColor=E95420"/> | - | - |
+| **Ubuntu 24.04 LTS** | <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Ubuntu%20LTS)&style=flat-square&logo=ubuntu&logoColor=white&label=build&labelColor=E95420"/> <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Ubuntu%2024.04%20LTS)&style=flat-square&logo=qemu&logoColor=white&label=qemu&labelColor=E95420"/> | <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=aarch64%20build%20(Ubuntu%20latest)&style=flat-square&logo=ubuntu&logoColor=white&label=build&labelColor=E95420"/> <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=aarch64%20QEMU%20Test%20(Ubuntu%20LTS)&style=flat-square&logo=qemu&logoColor=white&label=qemu&labelColor=E95420"/> | <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=riscv%20build%20(Ubuntu%20latest)&style=flat-square&logo=ubuntu&logoColor=white&label=build&labelColor=E95420"/> <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=riscv%20QEMU%20Test%20(Ubuntu%20LTS)&style=flat-square&logo=qemu&logoColor=white&label=qemu&labelColor=E95420"/> |
+| **Debian Stable** | <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Debian%20stable)&style=flat-square&logo=debian&logoColor=white&label=build&labelColor=A81D33"/> <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Debian%20Stable)&style=flat-square&logo=qemu&logoColor=white&label=qemu&labelColor=A81D33"/> | - | - |
+| **Fedora Latest** | <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(Fedora%20Latest)&style=flat-square&logo=fedora&logoColor=white&label=build&labelColor=294172"/> <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(Fedora%20Latest)&style=flat-square&logo=qemu&logoColor=white&label=qemu&labelColor=294172"/> | - | - |
+| **openSUSE Tumbleweed** | <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20build%20(openSUSE%20Tumbleweed)&style=flat-square&logo=opensuse&logoColor=white&label=build&labelColor=2D5F0F"/> <img src="https://img.shields.io/github/actions/workflow/status/cakehonolulu/pciem/ci.yml?job=amd64%20QEMU%20Test%20(openSUSE%20Tumbleweed)&style=flat-square&logo=qemu&logoColor=white&label=qemu&labelColor=2D5F0F"/> | - | - |
 
 # Examples
 
