@@ -145,15 +145,21 @@ struct nvme_version {
 } __attribute__((packed));
 
 struct nvme_cap {
-    uint64_t mqes    : 16; /* Max Queue Entries Supported (0-based) */
-    uint64_t to      : 8;  /* Timeout in 500ms units */
-    uint64_t dstrd   : 4;  /* Doorbell stride */
-    uint64_t nssrs   : 1;  /* NVM Subsystem Reset Supported */
-    uint64_t css     : 8;  /* Command Sets Supported */
-    uint64_t rsvd1   : 3;
-    uint64_t mpsmin  : 4;  /* Minimum page size */
-    uint64_t mpsmax  : 4;  /* Maximum page size */
-    uint64_t rsvd2   : 16;
+    uint64_t mqes    : 16; /* bits 15:0  – Maximum Queue Entries Supported */
+    uint64_t cqr     : 1;  /* bit  16    – Contiguous Queues Required */
+    uint64_t ams     : 2;  /* bits 18:17 – Arbitration Mechanism Supported */
+    uint64_t rsvd0   : 5;  /* bits 23:19 – rvd */
+    uint64_t to      : 8;  /* bits 31:24 – Timeout in 500ms units */
+    uint64_t dstrd   : 4;  /* bits 35:32 – Doorbell Stride */
+    uint64_t nssrs   : 1;  /* bit  36    – NVM Subsystem Reset Supported */
+    uint64_t css     : 8;  /* bits 44:37 – Command Sets Supported */
+    uint64_t bps     : 1;  /* bit  45    – Boot Partition Support */
+    uint64_t rsvd1   : 2;  /* bits 47:46 – rvd */
+    uint64_t mpsmin  : 4;  /* bits 51:48 – Minimum Memory Page Size */
+    uint64_t mpsmax  : 4;  /* bits 55:52 – Maximum Memory Page Size */
+    uint64_t pmrs    : 1;  /* bit  56    – Persistent Memory Region Supported */
+    uint64_t cmbs    : 1;  /* bit  57    – Controller Memory Buffer Supported */
+    uint64_t rsvd2   : 6;  /* bits 63:58 – rvd */
 } __attribute__((packed));
 
 struct nvme_lbaf {
@@ -654,11 +660,11 @@ static uint32_t nvme_identify_cns0(struct nvme_device *dev,
                                    struct nvme_command *cmd)
 {
     struct nvme_id_ns ns = {
-        .nsze = NVME_TOTAL_SECTORS,
-        .ncap = NVME_TOTAL_SECTORS,
-        .nuse = NVME_TOTAL_SECTORS,
-        .nlbaf = 1,
-        .lbaf = { { .ds = 12 } },
+        .nsze  = NVME_TOTAL_SECTORS,
+        .ncap  = NVME_TOTAL_SECTORS,
+        .nuse  = NVME_TOTAL_SECTORS,
+        .nlbaf = 0,
+        .lbaf  = { { .ds = 12 } },
     };
     struct pciem_dma_op op = {
         .guest_iova = cmd->prp1,
@@ -1403,7 +1409,7 @@ static void dev_prepare_ro_regs(struct nvme_device *dev)
         .cap = {
             .mqes = 64 - 1,
             .to = 10,
-            .dstrd = 1,
+            .dstrd = 0,
             .nssrs = 0,
             .css = 1,
             .mpsmin = 0,
