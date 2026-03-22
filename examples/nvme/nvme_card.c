@@ -358,11 +358,10 @@ union cdw11_t {
     uint32_t raw;
 
     struct {
+        uint8_t  phys_cont : 1;
+        uint8_t  ien : 1;
+        uint16_t reserved : 14;
         uint16_t vector;
-        uint8_t ien : 1;
-        uint8_t reserved : 7;
-        uint8_t phys_cont : 1;
-        uint8_t rsvd : 7;
     } create_io_cq;
 
     struct {
