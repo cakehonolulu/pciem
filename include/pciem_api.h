@@ -15,6 +15,8 @@
 typedef atomic_int atomic_t;
 #endif
 
+#define PCIEM_MAX_FUNCTIONS         8
+
 /** Mask to extract the bus mode bits from the flags field. */
 #define PCIEM_CREATE_FLAG_BUS_MODE_MASK     0x00000003
 
@@ -24,18 +26,36 @@ typedef atomic_int atomic_t;
 /** Attach to an existing physical PCIe bus. */
 #define PCIEM_CREATE_FLAG_BUS_MODE_ATTACH   0x00000001
 
-
+/**
+ * Parameters for PCIEM_IOCTL_CREATE_DEVICE.
+ *
+ * @param flags     Bus-mode flags (PCIEM_CREATE_FLAG_BUS_MODE_*).
+ * @param func      Function index to create (0–PCIEM_MAX_FUNCTIONS-1).
+ *                  Must be 0 for the first function on a slot.
+ *                  Functions 1–7 must be created after func 0.
+ *                  For single-function devices, leave at 0 (zero-init is fine).
+ * @param reserved  Must be zero.
+ */
 struct pciem_create_device
 {
     uint32_t flags;
+    uint8_t  func;
+    uint8_t  reserved[3];
 };
 
+/**
+ * Parameters for PCIEM_IOCTL_ADD_BAR.
+ *
+ * @param func  Function index this BAR belongs to (0–PCIEM_MAX_FUNCTIONS-1).
+ *              Defaults to 0 if zero-initialised.
+ */
 struct pciem_bar_config
 {
     uint32_t bar_index;
     uint32_t flags;
     uint64_t size;
-    uint32_t reserved;
+    uint8_t  func;
+    uint8_t  reserved[3];
 };
 
 struct pciem_cap_msi_userspace
@@ -71,9 +91,17 @@ struct pciem_cap_pasid_userspace
     uint8_t  reserved;
 };
 
+/**
+ * Parameters for PCIEM_IOCTL_ADD_CAPABILITY.
+ *
+ * @param func  Function index this capability belongs to (0–PCIEM_MAX_FUNCTIONS-1).
+ *              Defaults to 0 if zero-initialised.
+ */
 struct pciem_cap_config
 {
     uint32_t cap_type;
+    uint8_t  func;
+    uint8_t  reserved[3];
     union {
         struct pciem_cap_msi_userspace msi;
         struct pciem_cap_msix_userspace msix;
@@ -81,8 +109,16 @@ struct pciem_cap_config
     };
 };
 
+/**
+ * Parameters for PCIEM_IOCTL_SET_CONFIG.
+ *
+ * @param func  Function index to configure (0–PCIEM_MAX_FUNCTIONS-1).
+ *              Defaults to 0 if zero-initialised.
+ */
 struct pciem_config_space
 {
+    uint8_t  func;
+    uint8_t  reserved_func[3];
     uint16_t vendor_id;
     uint16_t device_id;
     uint16_t subsys_vendor_id;
@@ -129,7 +165,8 @@ struct pciem_response
 struct pciem_irq_inject
 {
     uint32_t vector;
-    uint32_t reserved;
+    uint8_t func;
+    uint8_t reserved[3];
 };
 
 struct pciem_dma_op
@@ -139,7 +176,8 @@ struct pciem_dma_op
     uint32_t length;
     uint32_t pasid;
     uint32_t flags;
-    uint32_t reserved;
+    uint8_t func;
+    uint8_t reserved[3];
 };
 
 #define PCIEM_DMA_FLAG_READ 0x1
@@ -153,6 +191,7 @@ struct pciem_dma_atomic
     uint32_t op_type;
     uint32_t pasid;
     uint64_t result;
+    uint8_t func;
 };
 
 #define PCIEM_ATOMIC_FETCH_ADD 1
@@ -169,14 +208,23 @@ struct pciem_p2p_op_user
     uint64_t user_addr;
     uint32_t length;
     uint32_t flags;
+    uint8_t func;
 };
 
+/**
+ * Parameters for PCIEM_IOCTL_GET_BAR_INFO.
+ *
+ * @param func  Function index to query (0–PCIEM_MAX_FUNCTIONS-1).
+ *              Defaults to 0 if zero-initialised.
+ */
 struct pciem_bar_info_query
 {
     uint32_t bar_index;
     uint64_t phys_addr;
     uint64_t size;
     uint32_t flags;
+    uint8_t  func;
+    uint8_t  reserved[3];
 };
 
 #define PCIEM_WP_FLAG_BAR_KPROBES  (1 << 0)
@@ -193,7 +241,8 @@ struct pciem_irqfd_config
     int32_t eventfd;
     uint32_t vector;
     uint32_t flags;
-    uint32_t reserved;
+    uint8_t func;
+    uint8_t reserved[3];
 };
 
 #define PCIEM_IRQFD_FLAG_LEVEL    (1 << 0)
@@ -208,7 +257,8 @@ struct pciem_dma_indirect
     uint32_t page_size;
     uint32_t pasid;
     uint32_t flags;
-    uint32_t reserved;
+    uint8_t func;
+    uint8_t reserved[3];
 };
 
 /* Notify userspace on BAR reads */
@@ -226,11 +276,18 @@ struct pciem_dma_indirect
  */
 #define PCIEM_TRACE_STOP_WRITES   (1 << 2)
 
-/* For PCIEM_IOCTL_TRACE_BAR */
+/**
+ * Parameters for PCIEM_IOCTL_TRACE_BAR.
+ *
+ * @param func  Function index whose BAR should be traced (0–PCIEM_MAX_FUNCTIONS-1).
+ *              Defaults to 0 if zero-initialised.
+ */
 struct pciem_trace_bar
 {
     uint32_t bar_index;
     uint32_t flags;
+    uint8_t  func;
+    uint8_t  reserved[3];
 };
 
 #define PCIEM_IOCTL_MAGIC 0xAF

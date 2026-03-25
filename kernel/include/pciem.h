@@ -22,12 +22,16 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 
+#include "pciem_api.h"
+
 #ifdef CONFIG_X86
 #include <asm/pci.h>
 #endif
 
+struct pciem_root_complex;
+
 struct pciem_host_bridge_priv {
-    struct pciem_root_complex *v;
+    struct pciem_root_complex *funcs[PCIEM_MAX_FUNCTIONS];
 
 #ifdef CONFIG_X86
     struct pci_sysdata sd;
@@ -82,6 +86,12 @@ struct pciem_root_complex
 {
     struct list_head list_node;
 
+    u8 func_index;
+
+    struct pciem_host_bridge_priv *bridge_priv;
+
+    struct pciem_root_complex *sibling_funcs[PCIEM_MAX_FUNCTIONS];
+
     unsigned int msi_irq;
     struct irq_work msi_irq_work;
     atomic_t pending_msi_irq;
@@ -117,7 +127,7 @@ struct pciem_root_complex
 
     struct pciem_p2p_manager *p2p_mgr;
 
-    unsigned int        intx_virq;
+    unsigned int        intx_virq[4]; // INTA-INTD
     struct irq_domain  *intx_domain;
 
     struct work_struct activation_work;
@@ -129,6 +139,10 @@ struct pciem_root_complex
 int pciem_trigger_msi(struct pciem_root_complex *v, int vector);
 int pciem_complete_init(struct pciem_root_complex *v);
 int pciem_start_device(struct pciem_root_complex *v);
+void pciem_set_multifunction(struct pciem_root_complex *func0,
+                             unsigned int num_funcs);
+int pciem_attach_function(struct pciem_root_complex *func0,
+                          struct pciem_root_complex *fn);
 int pciem_register_bar(struct pciem_root_complex *v, uint32_t bar_num, resource_size_t size, u32 flags);
 struct pciem_root_complex *pciem_alloc_root_complex(void);
 void pciem_free_root_complex(struct pciem_root_complex *v);

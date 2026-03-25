@@ -404,7 +404,6 @@ static int setup_irq_fd(void)
     irq_cfg.eventfd = dev_state.irq_fd;
     irq_cfg.vector = 0;
     irq_cfg.flags = 0;
-    irq_cfg.reserved = 0;
 
     if (ioctl(dev_state.pciem_fd, PCIEM_IOCTL_SET_IRQFD, &irq_cfg) < 0)
     {

@@ -87,9 +87,21 @@ static int pciem_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
     struct pci_host_bridge *bridge = pci_find_host_bridge(dev->bus);
     struct pciem_host_bridge_priv *priv = pci_host_bridge_priv(bridge);
+    struct pciem_root_complex *v;
+    unsigned int func = PCI_FUNC(dev->devfn);
 
-    /* ???: Should share only a single INTA line? */
-    return priv->v->intx_virq;
+    /* pin is 1-4 (INTA-INTD). Each function can have its own virtual INTx lines. */
+    if (!priv || func >= PCIEM_MAX_FUNCTIONS)
+        return 0;
+
+    v = priv->funcs[func];
+    if (!v)
+        return 0;
+
+    if (pin >= 1 && pin <= 4)
+        return v->intx_virq[pin - 1];
+
+    return 0;
 }
 
 int pciem_register_bar(struct pciem_root_complex *v, u32 bar_num, resource_size_t size, u32 flags)
@@ -500,20 +512,32 @@ static int pciem_conf_write_impl(struct pciem_root_complex *v, int where, int si
     return PCIBIOS_SUCCESSFUL;
 }
 
-static int vph_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
+static struct pciem_root_complex *
+vph_get_rc_for_devfn(struct pciem_host_bridge_priv *priv, unsigned int devfn)
+{
+    unsigned int func = PCI_FUNC(devfn);
+ 
+    if (PCI_SLOT(devfn) != 0)
+        return NULL;
+    if (func >= PCIEM_MAX_FUNCTIONS)
+        return NULL;
+    return priv->funcs[func];
+}
+ 
+static int vph_read_config(struct pci_bus *bus, unsigned int devfn,
+                           int where, int size, u32 *value)
 {
     struct pciem_root_complex *v;
 
 #ifdef CONFIG_X86
     struct pci_sysdata *sd = bus->sysdata;
     struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
-    v = priv->v;
 #else
     struct pciem_host_bridge_priv *priv = bus->sysdata;
-    v = priv->v;
 #endif
-
-    if (devfn != 0) {
+ 
+    v = vph_get_rc_for_devfn(priv, devfn);
+    if (!v) {
         *value = ~0U;
         return PCIBIOS_DEVICE_NOT_FOUND;
     }
@@ -528,13 +552,14 @@ static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, 
 #ifdef CONFIG_X86
     struct pci_sysdata *sd = bus->sysdata;
     struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
-    v = priv->v;
 #else
     struct pciem_host_bridge_priv *priv = bus->sysdata;
-    v = priv->v;
 #endif
-
-    if (devfn != 0) return PCIBIOS_DEVICE_NOT_FOUND;
+ 
+    v = vph_get_rc_for_devfn(priv, devfn);
+    if (!v)
+        return PCIBIOS_DEVICE_NOT_FOUND;
+ 
     return pciem_conf_write_impl(v, where, size, value);
 }
 
@@ -545,52 +570,74 @@ static struct pci_ops vph_pci_ops = {
 
 static int proxy_read_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
+    struct pciem_root_complex *func0;
+    struct pciem_root_complex *fn;
+    unsigned int func;
+ 
     if (!bus || !bus->ops)
         return PCIBIOS_DEVICE_NOT_FOUND;
-
-    struct pciem_root_complex *v = container_of(bus->ops, struct pciem_root_complex,
-                                                 mode_state.hijack.proxy_ops);
-
-    if (unlikely(bus->ops != &v->mode_state.hijack.proxy_ops)) {
-        pr_warn_once("proxy_read_config called with unexpected ops pointer\n");
-        return v->mode_state.hijack.original_ops->read(bus, devfn, where, size, value);
+ 
+    func0 = container_of(bus->ops, struct pciem_root_complex,
+                         mode_state.hijack.proxy_ops);
+ 
+    if (unlikely(bus->ops != &func0->mode_state.hijack.proxy_ops)) {
+        pr_warn_once("proxy_read_config: unexpected ops pointer\n");
+        return func0->mode_state.hijack.original_ops->read(bus, devfn,
+                                                            where, size, value);
     }
-
-    if (bus->number == v->mode_state.hijack.target_bus->number &&
-        PCI_SLOT(devfn) == v->mode_state.hijack.hijacked_slot) {
-
-        /* FIXME: Function 0 for now */
-        if (PCI_FUNC(devfn) > 0) {
-            *value = ~0U;
-            return PCIBIOS_DEVICE_NOT_FOUND;
-        }
-        return pciem_conf_read_impl(v, where, size, value);
+ 
+    if (bus->number != func0->mode_state.hijack.target_bus->number ||
+        PCI_SLOT(devfn) != func0->mode_state.hijack.hijacked_slot)
+        return func0->mode_state.hijack.original_ops->read(bus, devfn,
+                                                            where, size, value);
+ 
+    func = PCI_FUNC(devfn);
+    if (func >= PCIEM_MAX_FUNCTIONS) {
+        *value = ~0U;
+        return PCIBIOS_DEVICE_NOT_FOUND;
     }
-
-    return v->mode_state.hijack.original_ops->read(bus, devfn, where, size, value);
+ 
+    fn = func0->sibling_funcs[func];
+    if (!fn) {
+        *value = ~0U;
+        return PCIBIOS_DEVICE_NOT_FOUND;
+    }
+ 
+    return pciem_conf_read_impl(fn, where, size, value);
 }
 
 static int proxy_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
 {
+    struct pciem_root_complex *func0;
+    struct pciem_root_complex *fn;
+    unsigned int func;
+ 
     if (!bus || !bus->ops)
         return PCIBIOS_DEVICE_NOT_FOUND;
-
-    struct pciem_root_complex *v = container_of(bus->ops, struct pciem_root_complex,
-                                                 mode_state.hijack.proxy_ops);
-
-    if (unlikely(bus->ops != &v->mode_state.hijack.proxy_ops)) {
-        pr_warn_once("proxy_write_config called with unexpected ops pointer\n");
-        return v->mode_state.hijack.original_ops->write(bus, devfn, where, size, value);
+ 
+    func0 = container_of(bus->ops, struct pciem_root_complex,
+                         mode_state.hijack.proxy_ops);
+ 
+    if (unlikely(bus->ops != &func0->mode_state.hijack.proxy_ops)) {
+        pr_warn_once("proxy_write_config: unexpected ops pointer\n");
+        return func0->mode_state.hijack.original_ops->write(bus, devfn,
+                                                             where, size, value);
     }
-
-    if (bus->number == v->mode_state.hijack.target_bus->number &&
-        PCI_SLOT(devfn) == v->mode_state.hijack.hijacked_slot) {
-
-        if (PCI_FUNC(devfn) > 0) return PCIBIOS_DEVICE_NOT_FOUND;
-        return pciem_conf_write_impl(v, where, size, value);
-    }
-
-    return v->mode_state.hijack.original_ops->write(bus, devfn, where, size, value);
+ 
+    if (bus->number != func0->mode_state.hijack.target_bus->number ||
+        PCI_SLOT(devfn) != func0->mode_state.hijack.hijacked_slot)
+        return func0->mode_state.hijack.original_ops->write(bus, devfn,
+                                                             where, size, value);
+ 
+    func = PCI_FUNC(devfn);
+    if (func >= PCIEM_MAX_FUNCTIONS)
+        return PCIBIOS_DEVICE_NOT_FOUND;
+ 
+    fn = func0->sibling_funcs[func];
+    if (!fn)
+        return PCIBIOS_DEVICE_NOT_FOUND;
+ 
+    return pciem_conf_write_impl(fn, where, size, value);
 }
 
 static struct pci_bus *pciem_find_suitable_root_bus(void)
@@ -643,6 +690,7 @@ static void pciem_activation_work_func(struct work_struct *work)
 {
     struct pciem_root_complex *v = 
         container_of(work, struct pciem_root_complex, activation_work);
+    int f;
 
     pr_info("activate: adding device to subsystem now\n");
 
@@ -650,14 +698,29 @@ static void pciem_activation_work_func(struct work_struct *work)
         if (v->root_bus)
             pci_bus_add_devices(v->root_bus);
     } else if (v->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
-        if (v->pciem_pdev)
-            pci_bus_add_device(v->pciem_pdev);
+        for (f = 0; f < PCIEM_MAX_FUNCTIONS; f++) {
+            struct pciem_root_complex *fn = v->sibling_funcs[f];
+            if (fn && fn->pciem_pdev)
+                pci_bus_add_device(fn->pciem_pdev);
+        }
     }
     
     v->activated = true;
 }
 
-static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct list_head *resources)
+void pciem_set_multifunction(struct pciem_root_complex *func0,
+                             unsigned int num_funcs)
+{
+    if (!func0 || num_funcs <= 1)
+        return;
+ 
+    func0->cfg[PCI_HEADER_TYPE] |= PCI_HEADER_TYPE_MFD;
+    pr_info("init: slot marked as multi-function (%u PFs)\n", num_funcs);
+}
+EXPORT_SYMBOL(pciem_set_multifunction);
+
+static int pciem_init_virtual_root_mode(struct pciem_root_complex *v,
+                                        struct list_head *resources)
 {
     int rc, busnr = 1, domain = 0;
     struct pci_host_bridge *bridge;
@@ -676,7 +739,10 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct lis
         return -ENOMEM;
 
     priv = pci_host_bridge_priv(bridge);
-    priv->v = v;
+
+    memset(priv->funcs, 0, sizeof(priv->funcs));
+    priv->funcs[v->func_index] = v;
+    v->bridge_priv = priv;
 
     pciem_fixup_bridge_domain(bridge, priv, domain);
 
@@ -685,17 +751,19 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct lis
     bridge->ops = &vph_pci_ops;
     list_splice_init(resources, &bridge->windows);
 
-    v->intx_domain = irq_domain_add_linear(NULL, 1, &irq_domain_simple_ops, v);
+    v->intx_domain = irq_domain_add_linear(NULL, 4, &irq_domain_simple_ops, v);
     if (!v->intx_domain) {
         pr_err("init: failed to create INTx irq_domain\n");
         pci_free_host_bridge(bridge);
         return -ENOMEM;
     }
-
-    v->intx_virq = irq_create_mapping(v->intx_domain, 0);
-    irq_set_chip_and_handler(v->intx_virq, &pciem_intx_chip,
-                            handle_simple_irq);
-
+ 
+    for (int i = 0; i < 4; i++) {
+        v->intx_virq[i] = irq_create_mapping(v->intx_domain, i);
+        irq_set_chip_and_handler(v->intx_virq[i], &pciem_intx_chip,
+                                 handle_simple_irq);
+    }
+ 
     bridge->map_irq     = pciem_map_irq;
     bridge->swizzle_irq = pci_common_swizzle;
 
@@ -715,9 +783,9 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct lis
     pciem_bus_init_resources(v);
     pci_bus_assign_resources(v->root_bus);
 
-    v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, 0));
+    v->pciem_pdev = pci_get_domain_bus_and_slot(domain, v->root_bus->number, PCI_DEVFN(0, v->func_index));
     if (!v->pciem_pdev) {
-        pr_err("init: Failed to find emulated device\n");
+        pr_err("init: Failed to find emulated device (func %u)\n", v->func_index);
         return -ENODEV;
     }
 
@@ -725,7 +793,7 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v, struct lis
     v->mode_state.virtual_root.assigned_domain = domain;
     v->mode_state.virtual_root.assigned_busnr = busnr;
 
-    pr_info("init: Virtual root mode - domain %d, bus %d\n", domain, busnr);
+    pr_info("init: Virtual root mode - domain %d, bus %d, func %u\n", domain, busnr, v->func_index);
     return 0;
 }
 
@@ -744,24 +812,32 @@ static int pciem_init_attach_to_host_mode(struct pciem_root_complex *v)
 
     pr_info("init: Targeting bus %04x:%02x for device injection\n",
             pci_domain_nr(target_bus), target_bus->number);
-
-    slot = pciem_find_free_slot(target_bus);
-    if (slot < 0) {
-        pr_err("init: No free slots on target bus\n");
-        return -ENOSPC;
+ 
+    if (v->func_index == 0) {
+        slot = pciem_find_free_slot(target_bus);
+        if (slot < 0) {
+            pr_err("init: No free slots on target bus\n");
+            return -ENOSPC;
+        }
+ 
+        pr_info("init: Injecting device at slot %02x on bus %04x:%02x\n",
+                slot, pci_domain_nr(target_bus), target_bus->number);
+ 
+        v->mode_state.hijack.target_bus = target_bus;
+        v->mode_state.hijack.hijacked_slot = slot;
+        v->mode_state.hijack.original_ops = target_bus->ops;
+ 
+        v->mode_state.hijack.proxy_ops = *target_bus->ops;
+        v->mode_state.hijack.proxy_ops.read = proxy_read_config;
+        v->mode_state.hijack.proxy_ops.write = proxy_write_config;
+ 
+        v->sibling_funcs[0] = v;
+    } else {
+        pr_err("init: attach_to_host called for func %u; use pciem_attach_function instead\n",
+               v->func_index);
+        return -EINVAL;
     }
-
-    pr_info("init: Injecting device at slot %02x on bus %04x:%02x\n",
-            slot, pci_domain_nr(target_bus), target_bus->number);
-
-    v->mode_state.hijack.target_bus = target_bus;
-    v->mode_state.hijack.hijacked_slot = slot;
-    v->mode_state.hijack.original_ops = target_bus->ops;
-
-    v->mode_state.hijack.proxy_ops = *target_bus->ops;
-    v->mode_state.hijack.proxy_ops.read = proxy_read_config;
-    v->mode_state.hijack.proxy_ops.write = proxy_write_config;
-
+ 
     for (i = 0; i < PCI_STD_NUM_BARS; i++) {
         struct pciem_bar_info *bar = &v->bars[i];
         if (bar->size == 0) continue;
@@ -1014,10 +1090,13 @@ static void pciem_teardown_device(struct pciem_root_complex *v)
 
     pciem_cleanup_bars(v);
 
-    if (v->intx_virq) {
-        irq_dispose_mapping(v->intx_virq);
-        v->intx_virq = 0;
+    for (int i = 0; i < 4; i++) {
+        if (v->intx_virq[i]) {
+            irq_dispose_mapping(v->intx_virq[i]);
+            v->intx_virq[i] = 0;
+        }
     }
+
     if (v->intx_domain) {
         irq_domain_remove(v->intx_domain);
         v->intx_domain = NULL;
@@ -1080,6 +1159,95 @@ static void __exit pciem_exit(void)
     pr_info("exit: pciem framework done");
 }
 
+int pciem_attach_function(struct pciem_root_complex *func0,
+                          struct pciem_root_complex *fn)
+{
+    unsigned int fidx = fn->func_index;
+    int i;
+ 
+    if (WARN_ON(fidx == 0 || fidx >= PCIEM_MAX_FUNCTIONS))
+        return -EINVAL;
+    if (WARN_ON(!func0 || func0->func_index != 0))
+        return -EINVAL;
+ 
+    if (func0->bus_mode == PCIEM_BUS_MODE_VIRTUAL_ROOT) {
+        struct pciem_host_bridge_priv *priv = func0->bridge_priv;
+ 
+        if (!priv || !func0->root_bus)
+            return -ENODEV;
+ 
+        priv->funcs[fidx] = fn;
+        fn->root_bus = func0->root_bus;
+ 
+        fn->pciem_pdev = pci_get_domain_bus_and_slot(
+            func0->mode_state.virtual_root.assigned_domain,
+            func0->root_bus->number,
+            PCI_DEVFN(0, fidx));
+        if (!fn->pciem_pdev) {
+            priv->funcs[fidx] = NULL;
+            pr_err("attach_function: PCI core did not enumerate func %u — "
+                   "is PCI_HEADER_TYPE_MFD set on func 0?\n", fidx);
+            return -ENODEV;
+        }
+ 
+        pr_info("attach_function: func %u attached (virtual-root)\n", fidx);
+ 
+    } else if (func0->bus_mode == PCIEM_BUS_MODE_ATTACH_TO_HOST) {
+        struct pci_bus *bus  = func0->root_bus;
+        int slot             = func0->mode_state.hijack.hijacked_slot;
+        struct pci_dev *dev;
+ 
+        fn->mode_state.hijack = func0->mode_state.hijack;
+        fn->root_bus          = bus;
+        func0->sibling_funcs[fidx] = fn;
+ 
+        for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+            struct pciem_bar_info *bar = &fn->bars[i];
+            if (bar->size == 0) continue;
+            if (i > 0 && (i % 2 == 1) &&
+                (fn->bars[i-1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
+                continue;
+            bar->base_addr_val = (u32)(bar->phys_addr & 0xFFFFFFFF);
+            if (bar->flags & PCI_BASE_ADDRESS_MEM_TYPE_64 && i+1 < PCI_STD_NUM_BARS)
+                fn->bars[i+1].base_addr_val = (u32)(bar->phys_addr >> 32);
+        }
+ 
+        pci_lock_rescan_remove();
+        dev = pci_scan_single_device(bus, PCI_DEVFN(slot, fidx));
+        pci_unlock_rescan_remove();
+ 
+        if (!dev) {
+            func0->sibling_funcs[fidx] = NULL;
+            pr_err("attach_function: scan failed for func %u\n", fidx);
+            return -ENODEV;
+        }
+ 
+        for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+            struct pciem_bar_info *bar = &fn->bars[i];
+            if (bar->size == 0) continue;
+            if (i > 0 && (i % 2 == 1) &&
+                (fn->bars[i-1].flags & PCI_BASE_ADDRESS_MEM_TYPE_64))
+                continue;
+            if (bar->allocated_res) {
+                dev->resource[i] = *bar->allocated_res;
+                dev->resource[i].name  = pci_name(dev);
+                dev->resource[i].flags |= IORESOURCE_PCI_FIXED | IORESOURCE_BUSY;
+                bar->res = &dev->resource[i];
+            }
+        }
+ 
+        fn->pciem_pdev = dev;
+        pr_info("attach_function: func %u attached (attach-to-host): %s\n",
+                fidx, pci_name(dev));
+ 
+    } else {
+        return -EINVAL;
+    }
+ 
+    return 0;
+}
+EXPORT_SYMBOL(pciem_attach_function);
+
 struct pciem_root_complex *pciem_alloc_root_complex(void)
 {
     struct pciem_root_complex *v;
@@ -1097,6 +1265,11 @@ struct pciem_root_complex *pciem_alloc_root_complex(void)
     atomic_set(&v->pending_msi_irq, 0);
     memset(v->bars, 0, sizeof(v->bars));
 
+    // Can be overriden by userspace
+    v->func_index  = 0;
+    v->bridge_priv = NULL;
+    memset(v->sibling_funcs, 0, sizeof(v->sibling_funcs));
+ 
     pr_info("Allocated pciem root complex\n");
     return v;
 }

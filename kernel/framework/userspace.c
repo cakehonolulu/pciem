@@ -39,6 +39,7 @@ struct pciem_irqfd
     struct pciem_userspace_state *us;
     uint32_t vector;
     uint32_t flags;
+    uint8_t func;
 };
 
 #define PCIEM_UNREGISTERED 0
@@ -55,9 +56,16 @@ struct pciem_tracer {
     struct smptrace_ctx ctx;
 };
 
+struct pciem_slot_state {
+    struct pciem_root_complex *funcs[PCIEM_MAX_FUNCTIONS];
+    unsigned int               num_funcs;
+    enum pciem_bus_mode        bus_mode;
+    spinlock_t                 slot_lock;
+};
+
 struct pciem_userspace_state
 {
-    struct pciem_root_complex *rc;
+    struct pciem_slot_state slot;
 
     struct hlist_head pending_requests[256];
     spinlock_t pending_lock;
@@ -75,7 +83,7 @@ struct pciem_userspace_state
     struct pciem_irqfds irqfds;
 
     /* BAR read/write trackers */
-    struct pciem_tracer tracers[PCI_STD_NUM_BARS];
+    struct pciem_tracer tracers[PCIEM_MAX_FUNCTIONS][PCI_STD_NUM_BARS];
 };
 
 struct pciem_pending_request
@@ -121,29 +129,42 @@ const struct file_operations pciem_device_fops = {
 };
 EXPORT_SYMBOL(pciem_device_fops);
 
+static inline struct pciem_root_complex *us_get_rc(struct pciem_userspace_state *us, u8 func)
+{
+    if (func >= PCIEM_MAX_FUNCTIONS)
+        return NULL;
+    return us->slot.funcs[func];
+}
+
 static int pciem_instance_mmap(struct file *file, struct vm_area_struct *vma)
 {
     struct pciem_userspace_state *us = file->private_data;
     struct pciem_bar_info *bar;
+    struct pciem_root_complex *v;
     unsigned long size = vma->vm_end - vma->vm_start;
+    unsigned long bar_index = vma->vm_pgoff & (PCI_STD_NUM_BARS - 1);
+    unsigned long func_index = vma->vm_pgoff >> 3;
 
-    unsigned long bar_index = vma->vm_pgoff;
-
-    if (!us || !us->rc)
+    if (!us)
         return -ENODEV;
 
-    if (bar_index >= PCI_STD_NUM_BARS)
+    if (func_index >= PCIEM_MAX_FUNCTIONS || bar_index >= PCI_STD_NUM_BARS)
     {
-        pr_err("pciem_instance: Invalid BAR index %lu via mmap offset\n", bar_index);
+        pr_err("pciem_instance: invalid func/bar %lu/%lu via mmap pgoff\n",
+               func_index, bar_index);
         return -EINVAL;
     }
 
-    guard(read_lock)(&us->rc->bars_lock);
-    bar = &us->rc->bars[bar_index];
+    v = us_get_rc(us, (u8)func_index);
+    if (!v)
+        return -ENODEV;
 
-    if (bar->size == 0 || bar->phys_addr == 0)
-    {
-        pr_err("pciem_instance: BAR%lu is not active or has no physical address\n", bar_index);
+    guard(read_lock)(&v->bars_lock);
+    bar = &v->bars[bar_index];
+
+    if (bar->size == 0 || bar->phys_addr == 0) {
+        pr_err("pciem_instance: func%lu BAR%lu is not active\n",
+               func_index, bar_index);
         return -EINVAL;
     }
 
@@ -156,9 +177,8 @@ static int pciem_instance_mmap(struct file *file, struct vm_area_struct *vma)
         return -EAGAIN;
     }
 
-    pr_debug("pciem_instance: Mapped BAR%lu (phys: 0x%llx) to userspace via instance FD\n",
-            bar_index, (u64)bar->phys_addr);
-
+    pr_debug("pciem_instance: mapped func%lu BAR%lu (phys=0x%llx) to userspace\n",
+             func_index, bar_index, (u64)bar->phys_addr);
     return 0;
 }
 
@@ -214,19 +234,21 @@ static void pciem_irqfds_shutdown(struct pciem_irqfds *irqfds)
 
 static void pciem_tracing_destroy(struct pciem_userspace_state *us)
 {
-    unsigned int i;
+    unsigned int f, i;
 
-    for (i = 0; i < PCI_STD_NUM_BARS; ++i) {
-        if (us->tracers[i].us) {
-            smptrace_destroy(&us->tracers[i].ctx);
-            us->tracers[i].us = NULL;
+    for (f = 0; f < PCIEM_MAX_FUNCTIONS; ++f) {
+        for (i = 0; i < PCI_STD_NUM_BARS; ++i) {
+            if (us->tracers[f][i].us) {
+                smptrace_destroy(&us->tracers[f][i].ctx);
+                us->tracers[f][i].us = NULL;
+            }
         }
     }
 }
 
 static void pciem_tracing_init(struct pciem_userspace_state *us)
 {
-    memset(&us->tracers, 0, ARRAY_SIZE(us->tracers) * sizeof(us->tracers[0]));
+    memset(&us->tracers, 0, sizeof(us->tracers));
 }
 
 static int pciem_shared_ring_alloc(struct pciem_userspace_state *us)
@@ -263,6 +285,10 @@ struct pciem_userspace_state *pciem_userspace_create(void)
         return ERR_PTR(ret);
     }
 
+    memset(&us->slot, 0, sizeof(us->slot));
+    spin_lock_init(&us->slot.slot_lock);
+    us->slot.num_funcs = 0;
+
     for (i = 0; i < ARRAY_SIZE(us->pending_requests); i++)
         INIT_HLIST_HEAD(&us->pending_requests[i]);
     spin_lock_init(&us->pending_lock);
@@ -283,7 +309,7 @@ static void pciem_userspace_destroy(struct pciem_userspace_state *us)
 {
     struct pciem_pending_request *req;
     struct hlist_node *tmp;
-    int i;
+    int i, f;
 
     if (!us)
         return;
@@ -306,6 +332,13 @@ static void pciem_userspace_destroy(struct pciem_userspace_state *us)
 
     if (us->eventfd)
         eventfd_ctx_put(us->eventfd);
+
+    for (f = 0; f < PCIEM_MAX_FUNCTIONS; f++) {
+        if (us->slot.funcs[f]) {
+            pciem_free_root_complex(us->slot.funcs[f]);
+            us->slot.funcs[f] = NULL;
+        }
+    }
 
     kfree(us);
 }
@@ -365,7 +398,7 @@ static int pciem_check_unregistered(struct pciem_userspace_state *us)
 {
     int registered;
 
-    if (!us->rc)
+    if (!us->slot.funcs[0])
         return -EINVAL;
 
     registered = atomic_read_acquire(&us->registered);
@@ -381,7 +414,7 @@ static int pciem_check_registered(struct pciem_userspace_state *us)
 {
     int registered;
 
-    if (!us->rc)
+    if (!us->slot.funcs[0])
         return -EINVAL;
 
     registered = atomic_read_acquire(&us->registered);
@@ -397,7 +430,7 @@ static int pciem_start_registration(struct pciem_userspace_state *us)
 {
     int val = PCIEM_UNREGISTERED;
 
-    if (!us->rc)
+    if (!us->slot.funcs[0])
         return -EINVAL;
 
     if (atomic_try_cmpxchg_release(&us->registered, &val, PCIEM_REGISTERING))
@@ -427,15 +460,7 @@ static int pciem_device_release(struct inode *inode, struct file *file)
 
     pr_info("Userspace device fd closed\n");
 
-    if (us)
-    {
-        if (!pciem_check_registered(us))
-        {
-            pr_info("Cleaning up registered device instance\n");
-            pciem_free_root_complex(us->rc);
-            us->rc = NULL;
-        }
-
+    if (us) {
         pciem_userspace_destroy(us);
     }
 
@@ -489,49 +514,75 @@ static int pciem_device_mmap(struct file *file, struct vm_area_struct *vma)
 static long pciem_ioctl_create_device(struct pciem_userspace_state *us, struct pciem_create_device __user *arg)
 {
     struct pciem_create_device cfg;
+    struct pciem_root_complex *v;
     enum pciem_bus_mode mode;
-
-    if (us->rc)
-        return -EBUSY;
+    unsigned long flags;
+    u8 func;
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
 
-    us->rc = pciem_alloc_root_complex();
-    if (IS_ERR(us->rc))
-    {
-        int ret = PTR_ERR(us->rc);
-        us->rc = NULL;
-        return ret;
+    func = cfg.func;
+    if (func >= PCIEM_MAX_FUNCTIONS)
+        return -EINVAL;
+
+    spin_lock_irqsave(&us->slot.slot_lock, flags);
+
+    if (us->slot.funcs[func]) {
+        spin_unlock_irqrestore(&us->slot.slot_lock, flags);
+        return -EBUSY;
     }
 
-    switch (cfg.flags & PCIEM_CREATE_FLAG_BUS_MODE_MASK) {
-    case PCIEM_CREATE_FLAG_BUS_MODE_VIRTUAL:
-        mode = PCIEM_BUS_MODE_VIRTUAL_ROOT;
-        pr_info("Userspace requested VIRTUAL_ROOT mode\n");
-        break;
-    case PCIEM_CREATE_FLAG_BUS_MODE_ATTACH:
-        mode = PCIEM_BUS_MODE_ATTACH_TO_HOST;
-        pr_info("Userspace requested ATTACH_TO_HOST mode\n");
-        break;
-    default:
-        mode = PCIEM_BUS_MODE_VIRTUAL_ROOT;
-        pr_info("Using default VIRTUAL_ROOT mode\n");
-        break;
+    if (func > 0 && !us->slot.funcs[0]) {
+        spin_unlock_irqrestore(&us->slot.slot_lock, flags);
+        pr_err("CREATE_DEVICE: function 0 must be created before func %u\n", func);
+        return -EINVAL;
     }
 
-    us->rc->bus_mode = mode;
+    spin_unlock_irqrestore(&us->slot.slot_lock, flags);
 
-    pciem_init_cap_manager(us->rc);
+    v = pciem_alloc_root_complex();
+    if (IS_ERR(v))
+        return PTR_ERR(v);
 
-    pr_info("Created userspace device instance\n");
+    v->func_index = func;
 
+    if (func == 0) {
+        switch (cfg.flags & PCIEM_CREATE_FLAG_BUS_MODE_MASK) {
+        case PCIEM_CREATE_FLAG_BUS_MODE_VIRTUAL:
+            mode = PCIEM_BUS_MODE_VIRTUAL_ROOT;
+            pr_info("Userspace requested VIRTUAL_ROOT mode\n");
+            break;
+        case PCIEM_CREATE_FLAG_BUS_MODE_ATTACH:
+            mode = PCIEM_BUS_MODE_ATTACH_TO_HOST;
+            pr_info("Userspace requested ATTACH_TO_HOST mode\n");
+            break;
+        default:
+            mode = PCIEM_BUS_MODE_VIRTUAL_ROOT;
+            pr_info("Using default VIRTUAL_ROOT mode\n");
+            break;
+        }
+        us->slot.bus_mode = mode;
+    } else {
+        mode = us->slot.bus_mode;
+    }
+
+    v->bus_mode = mode;
+    pciem_init_cap_manager(v);
+
+    spin_lock_irqsave(&us->slot.slot_lock, flags);
+    us->slot.funcs[func] = v;
+    us->slot.num_funcs++;
+    spin_unlock_irqrestore(&us->slot.slot_lock, flags);
+
+    pr_info("Created userspace device instance for func %u\n", func);
     return 0;
 }
 
 static long pciem_ioctl_add_bar(struct pciem_userspace_state *us, struct pciem_bar_config __user *arg)
 {
     struct pciem_bar_config cfg;
+    struct pciem_root_complex *v;
     int ret;
 
     ret = pciem_check_unregistered(us);
@@ -541,20 +592,26 @@ static long pciem_ioctl_add_bar(struct pciem_userspace_state *us, struct pciem_b
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
 
+    v = us_get_rc(us, cfg.func);
+    if (!v)
+        return -ENODEV;
+
     if (cfg.bar_index >= PCI_STD_NUM_BARS)
         return -EINVAL;
 
     if (cfg.size && (cfg.size & (cfg.size - 1)))
     {
-        pr_err("BAR%u size 0x%llx is not a power of 2\n", cfg.bar_index, cfg.size);
+        pr_err("func%u BAR%u size 0x%llx is not a power of 2\n",
+               cfg.func, cfg.bar_index, cfg.size);
         return -EINVAL;
     }
 
-    ret = pciem_register_bar(us->rc, cfg.bar_index, cfg.size, cfg.flags);
+    ret = pciem_register_bar(v, cfg.bar_index, cfg.size, cfg.flags);
 
     if (ret == 0)
     {
-        pr_info("Registered BAR%u: size=0x%llx, flags=0x%x\n", cfg.bar_index, cfg.size, cfg.flags);
+        pr_info("Registered func%u BAR%u: size=0x%llx flags=0x%x\n",
+                cfg.func, cfg.bar_index, cfg.size, cfg.flags);
     }
 
     return ret;
@@ -563,6 +620,7 @@ static long pciem_ioctl_add_bar(struct pciem_userspace_state *us, struct pciem_b
 static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct pciem_cap_config __user *arg)
 {
     struct pciem_cap_config cfg;
+    struct pciem_root_complex *v;
     int ret;
 
     ret = pciem_check_unregistered(us);
@@ -571,6 +629,10 @@ static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct 
 
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
+
+    v = us_get_rc(us, cfg.func);
+    if (!v)
+        return -ENODEV;
 
     switch (cfg.cap_type)
     {
@@ -583,7 +645,7 @@ static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct 
         msi.has_64bit = msi_cfg->has_64bit;
         msi.has_per_vector_masking = msi_cfg->has_masking;
 
-        ret = pciem_add_cap_msi(us->rc, &msi);
+        ret = pciem_add_cap_msi(v, &msi);
         break;
     }
 
@@ -597,25 +659,25 @@ static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct 
         msix.pba_offset = msix_cfg->pba_offset;
         msix.table_size = msix_cfg->table_size;
 
-        ret = pciem_add_cap_msix(us->rc, &msix);
+        ret = pciem_add_cap_msix(v, &msix);
         break;
     }
 
     case PCIEM_CAP_PCIE: {
         struct pciem_cap_pcie_config pcie = {0};
-        ret = pciem_add_cap_pcie(us->rc, &pcie);
+        ret = pciem_add_cap_pcie(v, &pcie);
         break;
     }
 
     case PCIEM_CAP_PASID: {
         struct pciem_cap_pasid_config pasid = {0};
-        ret = pciem_add_cap_pasid(us->rc, &pasid);
+        ret = pciem_add_cap_pasid(v, &pasid);
         break;
     }
 
     case PCIEM_CAP_PM: {
         struct pciem_cap_pm_config pm = {0};
-        ret = pciem_add_cap_pm(us->rc, &pm);
+        ret = pciem_add_cap_pm(v, &pm);
         break;
     }
 
@@ -630,6 +692,7 @@ static long pciem_ioctl_add_capability(struct pciem_userspace_state *us, struct 
 static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pciem_config_space __user *arg)
 {
     struct pciem_config_space cfg;
+    struct pciem_root_complex *v;
     u8 *config;
     int ret;
 
@@ -640,7 +703,11 @@ static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pcie
     if (copy_from_user(&cfg, arg, sizeof(cfg)))
         return -EFAULT;
 
-    config = us->rc->cfg;
+    v = us_get_rc(us, cfg.func);
+    if (!v)
+        return -ENODEV;
+
+    config = v->cfg;
 
     *(u16 *)(config + PCI_VENDOR_ID) = cfg.vendor_id;
     *(u16 *)(config + PCI_DEVICE_ID) = cfg.device_id;
@@ -655,7 +722,8 @@ static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pcie
     *(u16 *)(config + PCI_STATUS) = PCI_STATUS_CAP_LIST;
     *(u8 *)(config + PCI_INTERRUPT_PIN) = 1;
 
-    pr_info("Config space set: vendor=0x%04x, device=0x%04x, class=0x%02x%02x%02x\n", cfg.vendor_id, cfg.device_id,
+    pr_info("Config space set: func%u vendor=0x%04x device=0x%04x class=0x%02x%02x%02x\n",
+            cfg.func, cfg.vendor_id, cfg.device_id,
             cfg.class_code[2], cfg.class_code[1], cfg.class_code[0]);
 
     return 0;
@@ -663,23 +731,49 @@ static long pciem_ioctl_set_config(struct pciem_userspace_state *us, struct pcie
 
 static long pciem_ioctl_register(struct pciem_userspace_state *us)
 {
-    int ret;
-    int fd;
+    int ret, fd, f;
 
     ret = pciem_start_registration(us);
     if (ret)
         return ret;
 
-    pr_info("Registering userspace-defined device on PCI bus\n");
+    pr_info("Registering userspace-defined device on PCI bus (%u PF(s))\n", us->slot.num_funcs);
 
-    pciem_build_config_space(us->rc);
+    for (f = 0; f < PCIEM_MAX_FUNCTIONS; f++) {
+        struct pciem_root_complex *v = us->slot.funcs[f];
+        if (v)
+            pciem_build_config_space(v);
+    }
 
-    ret = pciem_complete_init(us->rc);
+    if (us->slot.num_funcs > 1)
+        pciem_set_multifunction(us->slot.funcs[0], us->slot.num_funcs);
+
+    ret = pciem_complete_init(us->slot.funcs[0]);
     if (ret)
     {
         pciem_cancel_registration(us);
-        pr_err("Failed to complete device initialization: %d\n", ret);
+        pr_err("Failed to initialise func 0: %d\n", ret);
         return ret;
+    }
+
+    for (f = 1; f < PCIEM_MAX_FUNCTIONS; f++) {
+        struct pciem_root_complex *fn = us->slot.funcs[f];
+        if (!fn)
+            continue;
+
+        ret = pciem_complete_init(fn);
+        if (ret) {
+            pciem_cancel_registration(us);
+            pr_err("Failed to initialise func %d: %d\n", f, ret);
+            return ret;
+        }
+
+        ret = pciem_attach_function(us->slot.funcs[0], fn);
+        if (ret) {
+            pciem_cancel_registration(us);
+            pr_err("Failed to attach func %d: %d\n", f, ret);
+            return ret;
+        }
     }
 
     pciem_complete_registration(us);
@@ -704,12 +798,13 @@ static long pciem_ioctl_start(struct pciem_userspace_state *us)
     if (ret)
         return ret;
 
-    return pciem_start_device(us->rc);
+    return pciem_start_device(us->slot.funcs[0]);
 }
 
 static long pciem_ioctl_inject_irq(struct pciem_userspace_state *us, struct pciem_irq_inject __user *arg)
 {
     struct pciem_irq_inject inject;
+    struct pciem_root_complex *v;
     int ret;
 
     ret = pciem_check_registered(us);
@@ -719,11 +814,17 @@ static long pciem_ioctl_inject_irq(struct pciem_userspace_state *us, struct pcie
     if (copy_from_user(&inject, arg, sizeof(inject)))
         return -EFAULT;
 
-    pr_debug("Injecting MSI vector %d\n", inject.vector);
+    v = us_get_rc(us, inject.func);
+    if (!v) {
+        pr_err("pciem_ioctl_inject_irq: invalid function %u\n", inject.func);
+        return -ENODEV;
+    }
 
-    if (pciem_trigger_msi(us->rc, inject.vector) != 0)
+    pr_debug("Injecting MSI vector %d to func %u\n", inject.vector, inject.func);
+
+    if (pciem_trigger_msi(v, inject.vector) != 0)
     {
-        pr_err("pciem_ioctl_inject_irq: Failed to trigger MSI!");
+        pr_err("pciem_ioctl_inject_irq: Failed to trigger MSI for func %u, vector %d\n", inject.func, inject.vector);
         return -EFAULT;
     }
 
@@ -750,6 +851,12 @@ static long pciem_ioctl_dma(struct pciem_userspace_state *us, struct pciem_dma_o
     if (!kernel_buf)
         return -ENOMEM;
 
+    struct pciem_root_complex *v = us_get_rc(us, op.func);
+    if (!v)
+    {
+        return -ENODEV;
+    }
+
     if (op.flags & PCIEM_DMA_FLAG_WRITE)
     {
         if (copy_from_user(kernel_buf, (void __user *)op.user_addr, op.length))
@@ -758,11 +865,11 @@ static long pciem_ioctl_dma(struct pciem_userspace_state *us, struct pciem_dma_o
             return -EFAULT;
         }
 
-        ret = pciem_dma_write_to_guest(us->rc, op.guest_iova, kernel_buf, op.length, op.pasid);
+        ret = pciem_dma_write_to_guest(v, op.guest_iova, kernel_buf, op.length, op.pasid);
     }
     else
     {
-        ret = pciem_dma_read_from_guest(us->rc, op.guest_iova, kernel_buf, op.length, op.pasid);
+        ret = pciem_dma_read_from_guest(v, op.guest_iova, kernel_buf, op.length, op.pasid);
 
         if (ret == 0 && copy_to_user((void __user *)op.user_addr, kernel_buf, op.length))
             ret = -EFAULT;
@@ -785,28 +892,32 @@ static long pciem_ioctl_dma_atomic(struct pciem_userspace_state *us, struct pcie
     if (copy_from_user(&atomic, arg, sizeof(atomic)))
         return -EFAULT;
 
+    struct pciem_root_complex *v = us_get_rc(us, atomic.func);
+    if (!v)
+        return -ENODEV;
+
     switch (atomic.op_type)
     {
     case PCIEM_ATOMIC_FETCH_ADD:
-        result = pciem_dma_atomic_fetch_add(us->rc, atomic.guest_iova, atomic.operand, atomic.pasid);
+        result = pciem_dma_atomic_fetch_add(v, atomic.guest_iova, atomic.operand, atomic.pasid);
         break;
     case PCIEM_ATOMIC_FETCH_SUB:
-        result = pciem_dma_atomic_fetch_sub(us->rc, atomic.guest_iova, atomic.operand, atomic.pasid);
+        result = pciem_dma_atomic_fetch_sub(v, atomic.guest_iova, atomic.operand, atomic.pasid);
         break;
     case PCIEM_ATOMIC_SWAP:
-        result = pciem_dma_atomic_swap(us->rc, atomic.guest_iova, atomic.operand, atomic.pasid);
+        result = pciem_dma_atomic_swap(v, atomic.guest_iova, atomic.operand, atomic.pasid);
         break;
     case PCIEM_ATOMIC_CAS:
-        result = pciem_dma_atomic_cas(us->rc, atomic.guest_iova, atomic.compare, atomic.operand, atomic.pasid);
+        result = pciem_dma_atomic_cas(v, atomic.guest_iova, atomic.compare, atomic.operand, atomic.pasid);
         break;
     case PCIEM_ATOMIC_FETCH_AND:
-        result = pciem_dma_atomic_fetch_and(us->rc, atomic.guest_iova, atomic.operand, atomic.pasid);
+        result = pciem_dma_atomic_fetch_and(v, atomic.guest_iova, atomic.operand, atomic.pasid);
         break;
     case PCIEM_ATOMIC_FETCH_OR:
-        result = pciem_dma_atomic_fetch_or(us->rc, atomic.guest_iova, atomic.operand, atomic.pasid);
+        result = pciem_dma_atomic_fetch_or(v, atomic.guest_iova, atomic.operand, atomic.pasid);
         break;
     case PCIEM_ATOMIC_FETCH_XOR:
-        result = pciem_dma_atomic_fetch_xor(us->rc, atomic.guest_iova, atomic.operand, atomic.pasid);
+        result = pciem_dma_atomic_fetch_xor(v, atomic.guest_iova, atomic.operand, atomic.pasid);
         break;
     default:
         return -EINVAL;
@@ -814,10 +925,7 @@ static long pciem_ioctl_dma_atomic(struct pciem_userspace_state *us, struct pcie
 
     atomic.result = result;
 
-    if (copy_to_user(arg, &atomic, sizeof(atomic)))
-        return -EFAULT;
-
-    return ret;
+    return copy_to_user(arg, &atomic, sizeof(atomic)) ? -EFAULT : 0;
 }
 
 static long pciem_ioctl_p2p(struct pciem_userspace_state *us, struct pciem_p2p_op_user __user *arg)
@@ -840,6 +948,10 @@ static long pciem_ioctl_p2p(struct pciem_userspace_state *us, struct pciem_p2p_o
     if (!kernel_buf)
         return -ENOMEM;
 
+    struct pciem_root_complex *v = us_get_rc(us, op.func);
+    if (!v)
+        return -ENODEV;
+
     if (op.flags & PCIEM_DMA_FLAG_WRITE)
     {
         if (copy_from_user(kernel_buf, (void __user *)op.user_addr, op.length))
@@ -848,11 +960,11 @@ static long pciem_ioctl_p2p(struct pciem_userspace_state *us, struct pciem_p2p_o
             return -EFAULT;
         }
 
-        ret = pciem_p2p_write(us->rc, op.target_phys_addr, kernel_buf, op.length);
+        ret = pciem_p2p_write(v, op.target_phys_addr, kernel_buf, op.length);
     }
     else
     {
-        ret = pciem_p2p_read(us->rc, op.target_phys_addr, kernel_buf, op.length);
+        ret = pciem_p2p_read(v, op.target_phys_addr, kernel_buf, op.length);
 
         if (ret == 0 && copy_to_user((void __user *)op.user_addr, kernel_buf, op.length))
             ret = -EFAULT;
@@ -866,6 +978,7 @@ static long pciem_ioctl_get_bar_info(struct pciem_userspace_state *us, struct pc
 {
     struct pciem_bar_info_query query;
     struct pciem_bar_info *bar;
+    struct pciem_root_complex *v;
     int ret;
 
     ret = pciem_check_registered(us);
@@ -878,8 +991,12 @@ static long pciem_ioctl_get_bar_info(struct pciem_userspace_state *us, struct pc
     if (query.bar_index >= PCI_STD_NUM_BARS)
         return -EINVAL;
 
-    guard(read_lock)(&us->rc->bars_lock);
-    bar = &us->rc->bars[query.bar_index];
+    v = us_get_rc(us, query.func);
+    if (!v)
+        return -ENODEV;
+
+    guard(read_lock)(&v->bars_lock);
+    bar = &v->bars[query.bar_index];
 
     if (bar->size == 0)
         return -ENOENT;
@@ -891,7 +1008,8 @@ static long pciem_ioctl_get_bar_info(struct pciem_userspace_state *us, struct pc
     if (copy_to_user(arg, &query, sizeof(query)))
         return -EFAULT;
 
-    pr_debug("BAR%u info: phys=0x%llx size=0x%llx flags=0x%x\n", query.bar_index, query.phys_addr, query.size,
+    pr_debug("func%u BAR%u: phys=0x%llx size=0x%llx flags=0x%x\n",
+             query.func, query.bar_index, query.phys_addr, query.size,
              query.flags);
 
     return 0;
@@ -946,10 +1064,10 @@ static void pciem_irqfd_work(struct work_struct *work)
     struct pciem_irqfd *irqfd = container_of(work, struct pciem_irqfd, inject_work);
     struct pciem_userspace_state *us = irqfd->us;
 
-    if (us && us->rc) {
-        if (pciem_trigger_msi(us->rc, irqfd->vector) != 0)
-        {
-            pr_err("pciem_irqfd_work: Failed to trigger MSI!");
+    if (us) {
+        struct pciem_root_complex *v = us_get_rc(us, irqfd->func);
+        if (v && pciem_trigger_msi(v, irqfd->vector) != 0) {
+            pr_err("pciem_irqfd_work: Failed to trigger MSI!\n");
             BUG();
         }
     }
@@ -1031,6 +1149,7 @@ static long pciem_ioctl_set_irqfd(struct pciem_userspace_state *us,
 
     irqfd->trigger = eventfd;
     irqfd->vector = cfg.vector;
+    irqfd->func = cfg.func;
     irqfd->flags = cfg.flags;
     irqfd->us = us;
     INIT_LIST_HEAD(&irqfd->list);
@@ -1104,14 +1223,18 @@ static long pciem_ioctl_dma_indirect(struct pciem_userspace_state *us, struct pc
     chunk = page_size - offset;
     if (chunk > remaining) chunk = remaining;
 
+    struct pciem_root_complex *v = us_get_rc(us, req.func);
+    if (!v)
+        return -ENODEV;
+
     if (req.flags & PCIEM_DMA_FLAG_WRITE) {
         if (copy_from_user(data_buf, (void __user *)user_ptr, chunk)) {
             ret = -EFAULT;
             goto out;
         }
-        ret = pciem_dma_write_to_guest(us->rc, req.prp1, data_buf, chunk, req.pasid);
+        ret = pciem_dma_write_to_guest(v, req.prp1, data_buf, chunk, req.pasid);
     } else {
-        ret = pciem_dma_read_from_guest(us->rc, req.prp1, data_buf, chunk, req.pasid);
+        ret = pciem_dma_read_from_guest(v, req.prp1, data_buf, chunk, req.pasid);
         if (ret == 0) {
             if (copy_to_user((void __user *)user_ptr, data_buf, chunk))
                 ret = -EFAULT;
@@ -1131,9 +1254,9 @@ static long pciem_ioctl_dma_indirect(struct pciem_userspace_state *us, struct pc
                 ret = -EFAULT;
                 goto out;
             }
-            ret = pciem_dma_write_to_guest(us->rc, req.prp2, data_buf, remaining, req.pasid);
+            ret = pciem_dma_write_to_guest(v, req.prp2, data_buf, remaining, req.pasid);
         } else {
-            ret = pciem_dma_read_from_guest(us->rc, req.prp2, data_buf, remaining, req.pasid);
+            ret = pciem_dma_read_from_guest(v, req.prp2, data_buf, remaining, req.pasid);
             if (ret == 0 && copy_to_user((void __user *)user_ptr, data_buf, remaining)) {
                 ret = -EFAULT;
             }
@@ -1147,7 +1270,7 @@ static long pciem_ioctl_dma_indirect(struct pciem_userspace_state *us, struct pc
     uint32_t list_offset = cur_prp_list & (page_size - 1);
     uint32_t list_bytes = page_size - list_offset;
     
-    ret = pciem_dma_read_from_guest(us->rc, cur_prp_list, list_buf, list_bytes, req.pasid);
+    ret = pciem_dma_read_from_guest(v, cur_prp_list, list_buf, list_bytes, req.pasid);
     if (ret) goto out;
 
     uint64_t *prps = (uint64_t *)list_buf;
@@ -1161,7 +1284,7 @@ static long pciem_ioctl_dma_indirect(struct pciem_userspace_state *us, struct pc
             list_bytes = page_size - list_offset;
             max_entries = list_bytes / 8;
 
-            ret = pciem_dma_read_from_guest(us->rc, cur_prp_list, list_buf, list_bytes, req.pasid);
+            ret = pciem_dma_read_from_guest(v, cur_prp_list, list_buf, list_bytes, req.pasid);
             if (ret) goto out;
             
             prps = (uint64_t *)list_buf;
@@ -1177,9 +1300,9 @@ static long pciem_ioctl_dma_indirect(struct pciem_userspace_state *us, struct pc
                 ret = -EFAULT;
                 goto out;
             }
-            ret = pciem_dma_write_to_guest(us->rc, data_phys, data_buf, chunk, req.pasid);
+            ret = pciem_dma_write_to_guest(v, data_phys, data_buf, chunk, req.pasid);
         } else {
-            ret = pciem_dma_read_from_guest(us->rc, data_phys, data_buf, chunk, req.pasid);
+            ret = pciem_dma_read_from_guest(v, data_phys, data_buf, chunk, req.pasid);
             if (ret == 0 && copy_to_user((void __user *)user_ptr, data_buf, chunk)) {
                 ret = -EFAULT;
             }
@@ -1242,12 +1365,16 @@ static int pciem_ioctl_trace_bar(struct pciem_userspace_state *us,
     struct pciem_trace_bar req;
     struct pciem_bar_info *bar;
     struct pciem_tracer *tracer;
+    struct pciem_root_complex *v;
     resource_size_t pa;
     unsigned long len;
     int ret;
 
     if (copy_from_user(&req, arg, sizeof(req)))
         return -EFAULT;
+
+    if (req.func >= PCIEM_MAX_FUNCTIONS)
+        return -EINVAL;
 
     if (req.bar_index >= PCI_STD_NUM_BARS)
         return -EINVAL;
@@ -1261,17 +1388,22 @@ static int pciem_ioctl_trace_bar(struct pciem_userspace_state *us,
      * "smptrace_init: Cannot register kprobe, not in atomic context"
     */
     {
-        guard(write_lock)(&us->rc->bars_lock);
+        guard(write_lock)(&us->slot.funcs[0]->bars_lock);
 
-        tracer = &us->tracers[req.bar_index];
+        v = us_get_rc(us, req.func);
+        if (!v)
+            return -ENODEV;
+
+        tracer = &us->tracers[req.func][req.bar_index];
         if (tracer->us) {
-            pr_err("Already tracing BAR%u, cannot start another trace session", req.bar_index);
+            pr_err("Already tracing func%u BAR%u\n", req.func, req.bar_index);
             return -EINVAL;
         }
 
-        bar = &us->rc->bars[req.bar_index];
+        bar = &v->bars[req.bar_index];
         if (!bar->carved_start || !bar->size) {
-            pr_warn("cannot trace BAR%u, not registered", req.bar_index);
+            pr_warn("cannot trace func%u BAR%u: not registered\n",
+                    req.func, req.bar_index);
             return -ENXIO;
         }
 
@@ -1298,12 +1430,12 @@ static int pciem_ioctl_trace_bar(struct pciem_userspace_state *us,
      * hold the lock again.
      */
     {
-        guard(write_lock)(&us->rc->bars_lock);
+        guard(write_lock)(&v->bars_lock);
         tracer->us = us;
     }
 
-    pr_info("Beginning tracing on BAR%u (PA = 0x%llx)",
-            req.bar_index, bar->carved_start);
+    pr_info("Beginning tracing on func%u BAR%u (PA = 0x%llx)",
+            req.func, req.bar_index, (u64)pa);
 
     return 0;
 }
