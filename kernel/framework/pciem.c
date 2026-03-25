@@ -59,6 +59,22 @@ MODULE_PARM_DESC(p2p_regions,
 static struct miscdevice pciem_dev;
 static const struct file_operations pciem_fops;
 static struct pci_ops vph_pci_ops;
+static struct irq_domain *pciem_virtual_root_nomsi_domain;
+
+static struct pciem_host_bridge_priv *pciem_bus_bridge_priv(struct pci_bus *bus)
+{
+#ifdef CONFIG_X86
+    struct pci_sysdata *sd = bus->sysdata;
+
+    return container_of(sd, struct pciem_host_bridge_priv, sd);
+#elif defined(PCIEM_ECAM_SYSDATA)
+    struct pci_config_window *cfg = bus->sysdata;
+
+    return container_of(cfg, struct pciem_host_bridge_priv, cfg);
+#else
+    return bus->sysdata;
+#endif
+}
 
 static void pciem_fixup_bridge_domain(struct pci_host_bridge *bridge, 
                                       struct pciem_host_bridge_priv *priv, 
@@ -70,6 +86,15 @@ static void pciem_fixup_bridge_domain(struct pci_host_bridge *bridge,
     priv->sd.domain = domain;
     priv->sd.node = NUMA_NO_NODE;
     bridge->sysdata = &priv->sd;
+#elif defined(PCIEM_ECAM_SYSDATA)
+    memset(&priv->cfg, 0, sizeof(priv->cfg));
+    /*
+     * Synthetic roots have no firmware-described companion. Keep cfg->parent
+     * NULL so the ACPI root-bridge path follows the same model used by
+     * Hyper-V synthetic PCI on arm64.
+     */
+    priv->cfg.parent = NULL;
+    bridge->sysdata = &priv->cfg;
 #else
     bridge->sysdata = priv;
 #endif
@@ -82,6 +107,27 @@ static struct irq_chip pciem_intx_chip = {
     .irq_mask    = pciem_intx_noop,
     .irq_unmask  = pciem_intx_noop,
 };
+
+static int pciem_init_virtual_root_nomsi_domain(void)
+{
+    if (pciem_virtual_root_nomsi_domain)
+        return 0;
+
+    pciem_virtual_root_nomsi_domain =
+        irq_domain_add_linear(NULL, 1, &irq_domain_simple_ops, NULL);
+    if (!pciem_virtual_root_nomsi_domain)
+        return -ENOMEM;
+
+    return 0;
+}
+
+static void pciem_cleanup_virtual_root_nomsi_domain(void)
+{
+    if (pciem_virtual_root_nomsi_domain) {
+        irq_domain_remove(pciem_virtual_root_nomsi_domain);
+        pciem_virtual_root_nomsi_domain = NULL;
+    }
+}
 
 static int pciem_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
@@ -527,14 +573,8 @@ vph_get_rc_for_devfn(struct pciem_host_bridge_priv *priv, unsigned int devfn)
 static int vph_read_config(struct pci_bus *bus, unsigned int devfn,
                            int where, int size, u32 *value)
 {
+    struct pciem_host_bridge_priv *priv = pciem_bus_bridge_priv(bus);
     struct pciem_root_complex *v;
-
-#ifdef CONFIG_X86
-    struct pci_sysdata *sd = bus->sysdata;
-    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
-#else
-    struct pciem_host_bridge_priv *priv = bus->sysdata;
-#endif
  
     v = vph_get_rc_for_devfn(priv, devfn);
     if (!v) {
@@ -547,14 +587,8 @@ static int vph_read_config(struct pci_bus *bus, unsigned int devfn,
 
 static int vph_write_config(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 value)
 {
+    struct pciem_host_bridge_priv *priv = pciem_bus_bridge_priv(bus);
     struct pciem_root_complex *v;
-
-#ifdef CONFIG_X86
-    struct pci_sysdata *sd = bus->sysdata;
-    struct pciem_host_bridge_priv *priv = container_of(sd, struct pciem_host_bridge_priv, sd);
-#else
-    struct pciem_host_bridge_priv *priv = bus->sysdata;
-#endif
  
     v = vph_get_rc_for_devfn(priv, devfn);
     if (!v)
@@ -750,10 +784,17 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v,
     bridge->busnr = busnr;
     bridge->ops = &vph_pci_ops;
     list_splice_init(resources, &bridge->windows);
+    /*
+     * Virtual-root instances are synthetic and have no firmware-described
+     * MSI routing. Install a private no-MSI domain before bridge
+     * registration so the PCI core does not walk the ACPI/IORT MSI path.
+     */
+    dev_set_msi_domain(&bridge->dev, pciem_virtual_root_nomsi_domain);
 
     v->intx_domain = irq_domain_add_linear(NULL, 4, &irq_domain_simple_ops, v);
     if (!v->intx_domain) {
         pr_err("init: failed to create INTx irq_domain\n");
+        dev_set_msi_domain(&bridge->dev, NULL);
         pci_free_host_bridge(bridge);
         return -ENOMEM;
     }
@@ -770,15 +811,25 @@ static int pciem_init_virtual_root_mode(struct pciem_root_complex *v,
     rc = pci_scan_root_bus_bridge(bridge);
     if (rc < 0) {
         pr_err("init: pci_scan_root_bus_bridge failed: %d\n", rc);
+        dev_set_msi_domain(&bridge->dev, NULL);
         pci_free_host_bridge(bridge);
         return -ENODEV;
     }
+
+    dev_set_msi_domain(&bridge->dev, NULL);
 
     v->root_bus = bridge->bus;
     if (!v->root_bus) {
         pr_err("init: Failed to create root bus\n");
         return -ENODEV;
     }
+
+    /*
+     * Keep MSI disabled after registration. The temporary bridge MSI domain
+     * only exists to bypass firmware MSI discovery during setup.
+     */
+    v->root_bus->bus_flags |= PCI_BUS_FLAGS_NO_MSI;
+    dev_set_msi_domain(&v->root_bus->dev, NULL);
 
     pciem_bus_init_resources(v);
     pci_bus_assign_resources(v->root_bus);
@@ -1120,6 +1171,10 @@ static int __init pciem_init(void)
     ret = pciem_pool_init(pciem_phys_region);
     if (ret) return ret;
 
+    ret = pciem_init_virtual_root_nomsi_domain();
+    if (ret)
+        goto fail_nomsi_domain;
+
     ret = pciem_userspace_init();
     if (ret) {
         pr_err("init: Failed to initialize userspace support: %d\n", ret);
@@ -1144,6 +1199,8 @@ static int __init pciem_init(void)
 fail_misc:
     pciem_userspace_cleanup();
 fail_userspace:
+    pciem_cleanup_virtual_root_nomsi_domain();
+fail_nomsi_domain:
     pciem_pool_exit();
     return ret;
 }
@@ -1154,6 +1211,7 @@ static void __exit pciem_exit(void)
 
     misc_deregister(&pciem_dev);
     pciem_userspace_cleanup();
+    pciem_cleanup_virtual_root_nomsi_domain();
     pciem_pool_exit();
     pr_info("exit: Unregistered /dev/pciem\n");
     pr_info("exit: pciem framework done");
