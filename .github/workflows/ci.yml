@@ -1085,7 +1085,7 @@ jobs:
           mount -t sysfs none /sys
           mount -t devtmpfs none /dev 2>/dev/null || true
 
-          if /bin/test_virtual_root.sh; then
+          if PCIEM_KO=/lib/modules/pciem.ko /bin/test_virtual_root.sh; then
             echo ">>> virtual-root smoke ok"
           else
             echo "RESULT: FAIL"
