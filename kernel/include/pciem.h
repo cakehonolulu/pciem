@@ -26,6 +26,9 @@
 
 #ifdef CONFIG_X86
 #include <asm/pci.h>
+#elif defined(CONFIG_ARM64) || defined(CONFIG_LOONGARCH)
+#define PCIEM_ECAM_SYSDATA
+#include <linux/pci-ecam.h>
 #endif
 
 struct pciem_root_complex;
@@ -35,6 +38,13 @@ struct pciem_host_bridge_priv {
 
 #ifdef CONFIG_X86
     struct pci_sysdata sd;
+#elif defined(PCIEM_ECAM_SYSDATA)
+    /*
+     * arm64 and LoongArch ACPI root-bridge setup interpret bridge->sysdata
+     * as struct pci_config_window and consume cfg->parent during
+     * pcibios_root_bridge_prepare().
+     */
+    struct pci_config_window cfg;
 #endif
 };
 
