@@ -1050,12 +1050,17 @@ jobs:
         run: |
           mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
 
+          make -C examples/virtual_root_smoke clean all LDFLAGS=-static
+
           cp /bin/busybox initramfs/bin/busybox
-          for cmd in sh ls lsmod insmod sleep cat echo mount dmesg; do
+          for cmd in sh ls lsmod insmod rmmod sleep cat echo mount dmesg grep kill id dirname tail reboot; do
             ln -s busybox initramfs/bin/$cmd
           done
 
           cp kernel/pciem.ko initramfs/lib/modules/
+          cp examples/virtual_root_smoke/pciem_vroot_smoke initramfs/bin/
+          cp examples/virtual_root_smoke/test_virtual_root.sh initramfs/bin/
+          chmod +x initramfs/bin/test_virtual_root.sh
 
           if [ -f examples/nvme/nvme_card ]; then
             cp examples/nvme/nvme_card initramfs/bin/
@@ -1081,6 +1086,13 @@ jobs:
           mount -t proc  none /proc
           mount -t sysfs none /sys
           mount -t devtmpfs none /dev 2>/dev/null || true
+
+          if PCIEM_KO=/lib/modules/pciem.ko /bin/test_virtual_root.sh; then
+            echo ">>> virtual-root smoke ok"
+          else
+            echo "RESULT: FAIL"
+            reboot -f
+          fi
 
           if insmod /lib/modules/pciem.ko \
               pciem_phys_region=0x90000000:0x10000000; then
@@ -1129,7 +1141,7 @@ jobs:
             -kernel vmlinuz-guest \
             -initrd initramfs.cpio.gz \
             -dtb guest.dtb \
-            -append "console=ttyAMA0 earlycon panic=1" \
+            -append "console=ttyAMA0 earlycon panic=1 panic_on_oops=1" \
             -nographic \
             -no-reboot \
             2>&1 | col -b | tee qemu_output.txt || true
@@ -1332,3 +1344,4 @@ jobs:
             echo "QEMU RISC-V test failed"
             exit 1
           fi
+
