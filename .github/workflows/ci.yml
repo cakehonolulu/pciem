@@ -1050,6 +1050,8 @@ jobs:
         run: |
           mkdir -p initramfs/{bin,proc,sys,dev,lib/modules}
 
+          make -C examples/virtual_root_smoke clean all LDFLAGS=-static
+
           cp /bin/busybox initramfs/bin/busybox
           for cmd in sh ls lsmod insmod rmmod sleep cat echo mount dmesg grep kill id dirname tail reboot; do
             ln -s busybox initramfs/bin/$cmd
