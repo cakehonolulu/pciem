@@ -102,8 +102,9 @@ static unsigned long riscv_level2size(unsigned int level)
 	}
 }
 
-int smptrace_arch_poison_pte(struct smptrace_ctx *ctx, struct smptrace_map *map)
+int smptrace_arch_poison_pte(struct smptrace_map *map)
 {
+	unsigned long satp = csr_read(CSR_SATP);
 	unsigned long va = map->va;
 	int64_t remain = map->len;
 	struct smptrace_pte *orig, *tmp;
@@ -111,7 +112,7 @@ int smptrace_arch_poison_pte(struct smptrace_ctx *ctx, struct smptrace_map *map)
 
 	while (remain > 0) {
 		unsigned int level;
-		pte_t *ptep = riscv_walk_pte(va, &level, ctx->riscv_kernel_satp);
+		pte_t *ptep = riscv_walk_pte(va, &level, satp);
 
 		if (!ptep) {
 			ret = -ENOENT;
@@ -162,14 +163,15 @@ fail:
 	return ret;
 }
 
-void smptrace_arch_restore_pte(struct smptrace_ctx *ctx, struct smptrace_map *map)
+void smptrace_arch_restore_pte(struct smptrace_map *map)
 {
+	unsigned long satp = csr_read(CSR_SATP);
 	unsigned long va = map->va;
 	int64_t remain = map->len;
 
 	while (remain > 0) {
 		unsigned int level;
-		pte_t *ptep = riscv_walk_pte(va, &level, ctx->riscv_kernel_satp);
+		pte_t *ptep = riscv_walk_pte(va, &level, satp);
 		struct smptrace_pte *orig;
 		unsigned long step;
 
@@ -460,9 +462,7 @@ static int __enter_riscv_handle_page_fault(struct kprobe *kp,
 		(struct pt_regs *)regs_get_kernel_argument(regs, 0);
 	unsigned long fault_va = fault_regs->badaddr;
 	unsigned long cause    = fault_regs->cause;
-	struct smptrace_map *tmp_map, map_copy = {0};
-	unsigned long flags;
-	bool found = false;
+	struct smptrace_map map = {0};
 	int ret;
 
 	if (cause != EXC_LOAD_PAGE_FAULT && cause != EXC_STORE_PAGE_FAULT)
@@ -471,18 +471,7 @@ static int __enter_riscv_handle_page_fault(struct kprobe *kp,
 	if (user_mode(fault_regs))
 		return 0;
 
-	spin_lock_irqsave(&ctx->lock, flags);
-	list_for_each_entry(tmp_map, &ctx->maps, list) {
-		if (fault_va >= tmp_map->va &&
-		    fault_va <  tmp_map->va + tmp_map->len) {
-			map_copy = *tmp_map;
-			found = true;
-			break;
-		}
-	}
-	spin_unlock_irqrestore(&ctx->lock, flags);
-
-	if (!found)
+	if (!smptrace_find_map_rcu(ctx, fault_va, &map))
 		return 0;
 
 	if (this_cpu_xchg(*ctx->in_pf, true)) {
@@ -490,7 +479,7 @@ static int __enter_riscv_handle_page_fault(struct kprobe *kp,
 		return 0;
 	}
 
-	ret = emulate_riscv_fault(ctx, &map_copy, fault_va, fault_regs);
+	ret = emulate_riscv_fault(ctx, &map, fault_va, fault_regs);
 	this_cpu_write(*ctx->in_pf, false);
 
 	if (!ret) {
@@ -503,9 +492,11 @@ static int __enter_riscv_handle_page_fault(struct kprobe *kp,
 
 int smptrace_arch_activate(struct smptrace_ctx *ctx)
 {
+	unsigned long satp;
+	
 	// Maybe we could do w/o SATP but it should point to kernel page tables on this context
-	ctx->riscv_kernel_satp = csr_read(CSR_SATP);
-	if (!ctx->riscv_kernel_satp) {
+	satp = csr_read(CSR_SATP);
+	if (!satp) {
 		pr_err("SATP is zero — MMU not enabled?\n");
 		return -EINVAL;
 	}

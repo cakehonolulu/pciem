@@ -26,6 +26,24 @@ smptrace_find_pte(struct smptrace_map *map, unsigned long va)
 	return NULL;
 }
 
+static inline bool smptrace_find_map_rcu(struct smptrace_ctx *ctx,
+					  unsigned long va, struct smptrace_map *dst)
+{
+	struct smptrace_map *tmp_map;
+
+	guard(rcu)();
+
+	list_for_each_entry_rcu(tmp_map, &ctx->maps, list) {
+		if (va >= tmp_map->va && va < tmp_map->va + tmp_map->len) {
+			*dst = *tmp_map;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
 int smptrace_register_probes(struct smptrace_ctx *ctx);
 int smptrace_enter_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs);
 int smptrace_exit_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs);
@@ -39,7 +57,7 @@ void smptrace_emulate_read(struct smptrace_ctx *ctx, struct smptrace_map *map,
  * to be supported by smptrace */
 
 int smptrace_arch_activate(struct smptrace_ctx *ctx);
-int smptrace_arch_poison_pte(struct smptrace_ctx *ctx, struct smptrace_map *map);
-void smptrace_arch_restore_pte(struct smptrace_ctx *ctx, struct smptrace_map *map);
+int smptrace_arch_poison_pte(struct smptrace_map *map);
+void smptrace_arch_restore_pte(struct smptrace_map *map);
 
 #endif

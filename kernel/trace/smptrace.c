@@ -42,6 +42,7 @@
 #include <linux/sched.h>
 #include <linux/ptrace.h>
 #include <linux/version.h>
+#include <linux/rculist.h>
 #include <asm/io.h>
 #include <asm/tlbflush.h>
 #include "trace/smptrace.h"
@@ -140,7 +141,7 @@ int smptrace_exit_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs)
 	pr_info("poisoning VA=0x%lx:%lx (PA=0x%llx:%lx)",
 	        va, args->len, (unsigned long long)ctx->pa, ctx->len);
 
-	if (smptrace_arch_poison_pte(ctx, map)) {
+	if (smptrace_arch_poison_pte(map)) {
 		kfree(map);
 
 		regs_set_return_value(regs, 0);
@@ -150,7 +151,7 @@ int smptrace_exit_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs)
 		        va, args->len, args->pa, args->len);
 	} else {
 		spin_lock_irqsave(&ctx->lock, flags);
-		list_add_tail(&map->list, &ctx->maps);
+		list_add_tail_rcu(&map->list, &ctx->maps);
 		spin_unlock_irqrestore(&ctx->lock, flags);
 	}
 
@@ -169,7 +170,7 @@ int smptrace_enter_iounmap(struct kprobe *kp, struct pt_regs *regs)
 	list_for_each_entry(map, &ctx->maps, list) {
 		if (map->va == va) {
 			found = map;
-			list_del(&map->list);
+			list_del_rcu(&map->list);
 			break;
 		}
 	}
@@ -180,8 +181,8 @@ int smptrace_enter_iounmap(struct kprobe *kp, struct pt_regs *regs)
 
 	pr_info("restoring VA=0x%lx (PA=0x%llx)", found->va,
 	        (unsigned long long)found->pa);
-	smptrace_arch_restore_pte(ctx, found);
-	kfree(found);
+	smptrace_arch_restore_pte(found);
+	kfree_rcu(found, rcu);
 	return 0;
 }
 
@@ -247,25 +248,26 @@ static void smptrace_deactivate(struct smptrace_ctx *ctx)
 	struct smptrace_map *map, *tmp;
 	unsigned long flags;
 
-	/* First, stop hooks on ioremap and iounmap so everyone stops updating
-	 * ctx->traced_va */
+	/* First, stop hooks on ioremap and iounmap so everyone stops adding
+	 * and removing poisoned PTEs */
 	unregister_kretprobe(&ctx->ioremap_krp);
 	unregister_kprobe(&ctx->iounmap_kp);
 
-	/* Stop #PF hook now that we shouldn't be hitting #PF */
-	unregister_kprobe(&ctx->badarea_kp);
-
+	/* Now unpoison PTEs so that we stop hitting #PF */
 	spin_lock_irqsave(&ctx->lock, flags);
 	list_for_each_entry_safe(map, tmp, &ctx->maps, list) {
-		list_del(&map->list);
+		list_del_rcu(&map->list);
 		spin_unlock_irqrestore(&ctx->lock, flags);
 
-		smptrace_arch_restore_pte(ctx, map);
-		kfree(map);
+		smptrace_arch_restore_pte(map);
+		kfree_rcu(map, rcu);
 
 		spin_lock_irqsave(&ctx->lock, flags);
 	}
 	spin_unlock_irqrestore(&ctx->lock, flags);
+
+	/* Stop #PF hook now that we shouldn't be hitting #PF */
+	unregister_kprobe(&ctx->badarea_kp);
 
 	if (ctx->shadow_va) {
 		iounmap(ctx->shadow_va);

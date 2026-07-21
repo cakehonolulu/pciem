@@ -8,6 +8,7 @@
 #include <asm/pgtable.h>
 #include <linux/kprobes.h>
 #include <linux/compiler.h>
+#include <linux/rcupdate.h>
 
 union smptrace_data {
 	u8 raw[8];
@@ -53,6 +54,7 @@ struct smptrace_map {
 	resource_size_t pa;
 	/* Un-poisoned PTEs */
 	struct list_head ptes;
+	struct rcu_head rcu;
 };
 
 struct smptrace_ctx {
@@ -66,16 +68,6 @@ struct smptrace_ctx {
 	unsigned long len;
 	/* Whether to emulate writes into the BAR */
 	bool stop_writes;
-
-#ifdef CONFIG_RISCV
-    /*
-     * Snapshotted SATP value within kernel context.
-	 *
-	 * Helps us avoid pulling certain symbols that would
-	 * make modpost complain.
-     */
-    unsigned long riscv_kernel_satp;
-#endif
 
 	/*** Do not touch below here ***/
 

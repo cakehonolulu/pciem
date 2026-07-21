@@ -104,7 +104,7 @@ static unsigned long arm64_level2size(unsigned int level)
  * This also overcomes the limitation of certain unexported functions (That
  * would probably make this much more cleaner...) erroring out on modpost.
  */
-int smptrace_arch_poison_pte(struct smptrace_ctx *ctx, struct smptrace_map *map)
+int smptrace_arch_poison_pte(struct smptrace_map *map)
 {
 	unsigned long va = map->va;
 	int64_t remain = map->len;
@@ -167,7 +167,7 @@ fail:
 /*
  * Restore the PTEs corresponding to the given VA range.
  */
-void smptrace_arch_restore_pte(struct smptrace_ctx *ctx, struct smptrace_map *map)
+void smptrace_arch_restore_pte(struct smptrace_map *map)
 {
 	unsigned long va = map->va;
 	int64_t remain = map->len;
@@ -413,27 +413,14 @@ static int __enter_do_kernel_fault(struct kprobe *kp, struct pt_regs *regs)
 	unsigned long esr        = regs_get_kernel_argument(regs, 1);
 	struct pt_regs *fault_regs =
 		(struct pt_regs *)regs_get_kernel_argument(regs, 2);
-	struct smptrace_map *tmp_map, map_copy = {0};
-	unsigned long flags;
-	bool found = false;
+	struct smptrace_map map = {0};
 	int ret;
 
 	// Only data aborts (There should not be any instruction aborts but...)
 	if (ESR_ELx_EC(esr) != ESR_ELx_EC_DABT_CUR)
 		return 0;
 
-	spin_lock_irqsave(&ctx->lock, flags);
-	list_for_each_entry(tmp_map, &ctx->maps, list) {
-		if (fault_va >= tmp_map->va &&
-		    fault_va <  tmp_map->va + tmp_map->len) {
-			map_copy = *tmp_map;
-			found = true;
-			break;
-		}
-	}
-	spin_unlock_irqrestore(&ctx->lock, flags);
-
-	if (!found)
+	if (!smptrace_find_map_rcu(ctx, fault_va, &map))
 		return 0;
 
 	if (this_cpu_xchg(*ctx->in_pf, true)) {
@@ -442,7 +429,7 @@ static int __enter_do_kernel_fault(struct kprobe *kp, struct pt_regs *regs)
 	}
 
 	// God bless fixed-width opcode ISAs
-	ret = emulate_arm64_fault(ctx, &map_copy, fault_va, esr, fault_regs);
+	ret = emulate_arm64_fault(ctx, &map, fault_va, esr, fault_regs);
 	this_cpu_write(*ctx->in_pf, false);
 
 	if (!ret) {
