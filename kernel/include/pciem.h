@@ -48,14 +48,6 @@ struct pciem_host_bridge_priv {
 #endif
 };
 
-struct pciem_mempool {
-    phys_addr_t         base;
-    resource_size_t     total_size;
-    resource_size_t     next_offset;
-    spinlock_t          lock;
-    struct resource     *res;
-};
-
 
 enum pciem_bus_mode {
     PCIEM_BUS_MODE_VIRTUAL_ROOT = 0,
