@@ -9,6 +9,7 @@
 
 #include "pool.h"
 
+#include <linux/bitmap.h>
 #include <linux/genalloc.h>
 #include <linux/mm.h>
 
@@ -26,9 +27,33 @@ static struct pciem_mempool pciem_pool = {
     },
 };
 
+struct pciem_data_align {
+    resource_size_t align;
+};
+
+/*
+ * Almost identical copy of gen_pool_first_fit_align in linux/lib/genalloc.c
+ * The only difference is pciem_data_align which takes a resource_size_t rather than an int.
+ */
+static unsigned long pciem_first_fit_align(unsigned long *map, unsigned long size,
+                                           unsigned long start, unsigned int nr, void *data,
+                                           struct gen_pool *pool, unsigned long start_addr)
+{
+    struct pciem_data_align *alignment;
+    unsigned long align_mask, align_off;
+    int order;
+
+    alignment = data;
+    order = pool->min_alloc_order;
+    align_mask = ((alignment->align + (1UL << order) - 1) >> order) - 1;
+    align_off = (start_addr & (alignment->align - 1)) >> order;
+
+    return bitmap_find_next_zero_area_off(map, size, start, nr, align_mask, align_off);
+}
+
 phys_addr_t pciem_pool_alloc(resource_size_t size)
 {
-    struct genpool_data_align align_data;
+    struct pciem_data_align align_data;
     unsigned long addr;
 
     if (!pciem_pool.pool) {
@@ -44,7 +69,7 @@ phys_addr_t pciem_pool_alloc(resource_size_t size)
 
     align_data.align = size;
 
-    addr = gen_pool_alloc_algo(pciem_pool.pool, size, gen_pool_first_fit_align, &align_data);
+    addr = gen_pool_alloc_algo(pciem_pool.pool, size, pciem_first_fit_align, &align_data);
     if (!addr) {
         pr_err("Out of pool memory.\n");
         return 0;
