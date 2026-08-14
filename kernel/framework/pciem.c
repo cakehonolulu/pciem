@@ -314,6 +314,11 @@ static void pciem_cleanup_bar(struct pciem_bar_info *bar)
         kfree(bar->allocated_res);
         bar->allocated_res = NULL;
     }
+    if (bar->carved_start) {
+        pciem_pool_free(bar->carved_start, bar->carved_end - bar->carved_start + 1);
+        bar->carved_start = 0;
+        bar->carved_end = 0;
+    }
     if (bar->pages) {
         __free_pages(bar->pages, bar->order);
         bar->pages = NULL;

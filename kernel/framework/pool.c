@@ -9,18 +9,17 @@
 
 #include "pool.h"
 
-#include <linux/slab.h>
+#include <linux/genalloc.h>
+#include <linux/mm.h>
 
 struct pciem_mempool {
     phys_addr_t         base;
     resource_size_t     total_size;
-    resource_size_t     next_offset;
-    spinlock_t          lock;
+    struct gen_pool     *pool;
     struct resource     res;
 };
 
 static struct pciem_mempool pciem_pool = {
-    .lock = __SPIN_LOCK_UNLOCKED(pciem_pool.lock),
     .res = {
         .name = "PCIem BAR pool",
         .flags = IORESOURCE_MEM,
@@ -29,12 +28,10 @@ static struct pciem_mempool pciem_pool = {
 
 phys_addr_t pciem_pool_alloc(resource_size_t size)
 {
-    phys_addr_t addr;
-    resource_size_t aligned_offset;
+    struct genpool_data_align align_data;
+    unsigned long addr;
 
-    guard(spinlock)(&pciem_pool.lock);
-
-    if (!pciem_pool.total_size) {
+    if (!pciem_pool.pool) {
         pr_err("No physical memory pool configured.\n");
         pr_err("Pass pciem_phys_region=0xADDR:0xSIZE at insmod.\n");
         return 0;
@@ -45,19 +42,33 @@ phys_addr_t pciem_pool_alloc(resource_size_t size)
         return 0;
     }
 
-    aligned_offset = ALIGN(pciem_pool.next_offset, size);
+    align_data.align = size;
 
-    if (aligned_offset + size > pciem_pool.total_size) {
+    addr = gen_pool_alloc_algo(pciem_pool.pool, size, gen_pool_first_fit_align, &align_data);
+    if (!addr) {
         pr_err("Out of pool memory.\n");
         return 0;
     }
 
-    addr = pciem_pool.base + aligned_offset;
-    pciem_pool.next_offset = aligned_offset + size;
-
     pr_info("Allocated 0x%llx bytes at phys 0x%llx (pool offset 0x%llx)\n",
-            (u64)size, (u64)addr, (u64)aligned_offset);
+            (u64)size, (u64)addr, (u64)(addr - pciem_pool.base));
     return addr;
+}
+
+void pciem_pool_free(phys_addr_t addr, resource_size_t size)
+{
+    if (!pciem_pool.pool)
+        return;
+
+    if (!addr || addr < pciem_pool.base || addr + size > pciem_pool.base + pciem_pool.total_size) {
+        pr_warn("Cannot free phys 0x%llx: outside of pool\n", (u64)addr);
+        return;
+    }
+
+    gen_pool_free(pciem_pool.pool, addr, size);
+
+    pr_info("Freed 0x%llx bytes at phys 0x%llx, 0x%llx bytes available\n",
+            (u64)size, (u64)addr, (u64)gen_pool_avail(pciem_pool.pool));
 }
 
 int pciem_pool_init(const char *phys_region)
@@ -65,6 +76,8 @@ int pciem_pool_init(const char *phys_region)
     phys_addr_t base;
     resource_size_t size;
     struct resource *res = &pciem_pool.res;
+    struct gen_pool *pool;
+    int ret;
 
     if (!phys_region || !*phys_region) {
         pr_info("No phys_region specified\n");
@@ -95,23 +108,43 @@ int pciem_pool_init(const char *phys_region)
         return -EBUSY;
     }
 
+    pool = gen_pool_create(PAGE_SHIFT, -1);
+    if (!pool) {
+        ret = -ENOMEM;
+        goto err_release;
+    }
+
+    ret = gen_pool_add(pool, base, size, -1);
+    if (ret)
+        goto err_destroy;
+
     pciem_pool.base = base;
     pciem_pool.total_size = size;
-    pciem_pool.next_offset = 0;
+    pciem_pool.pool = pool;
 
     pr_info("BAR pool ready [0x%llx – 0x%llx]\n",
             (u64)base, (u64)(base + size - 1));
     return 0;
+
+err_destroy:
+    gen_pool_destroy(pool);
+err_release:
+    release_resource(res);
+    return ret;
 }
 
 void pciem_pool_exit(void)
 {
-    if (!pciem_pool.total_size)
+    struct gen_pool *pool = pciem_pool.pool;
+
+    if (!pool)
         return;
 
-    release_resource(&pciem_pool.res);
-
+    pciem_pool.pool = NULL;
     pciem_pool.total_size = 0;
+
+    gen_pool_destroy(pool);
+    release_resource(&pciem_pool.res);
     pr_info("BAR pool released\n");
 }
 
