@@ -92,7 +92,6 @@ int pciem_pool_init(const char *phys_region)
     if (insert_resource(&iomem_resource, res)) {
         pr_err("Failed to claim [0x%llx-0x%llx] in iomem\n",
                (u64)base, (u64)(base + size - 1));
-        kfree(res);
         return -EBUSY;
     }
 
