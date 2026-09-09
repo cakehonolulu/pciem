@@ -12,6 +12,7 @@
 int pciem_pool_init(const char *phys_region);
 int pciem_pool_insert(struct resource *res);
 phys_addr_t pciem_pool_alloc(resource_size_t size);
+void pciem_pool_free(phys_addr_t addr, resource_size_t size);
 void pciem_pool_exit(void);
 
 #endif /* PCIEM_POOL_H */
