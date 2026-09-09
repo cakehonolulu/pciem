@@ -196,7 +196,7 @@ int pciem_p2p_register_region(struct pciem_root_complex *v,
     }
 
     if (name) {
-        strncpy(region->name, name, sizeof(region->name) - 1);
+        strscpy(region->name, name, sizeof(region->name) - 1);
     } else {
         snprintf(region->name, sizeof(region->name), "dynamic_0x%llx", phys);
     }
