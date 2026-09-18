@@ -176,11 +176,10 @@ EXPORT_SYMBOL(pciem_dma_write_to_guest);
 
 static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type, u64 operand, u64 compare, u32 pasid)
 {
+    struct iommu_domain *domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
     phys_addr_t phys_addr;
     void *kva;
     u64 old_val = 0;
-    phys_addr_t *phys_pages = NULL;
-    int num_pages;
     atomic64_t *atomic_ptr;
 
     if (!IS_ALIGNED(guest_iova, 8)) {
@@ -188,19 +187,14 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
         return 0;
     }
 
-    phys_pages = translate_iova(v, guest_iova, 8, &num_pages);
-    if (IS_ERR(phys_pages))
-    {
+    phys_addr = translate_iova_once(domain, PAGE_ALIGN_DOWN(guest_iova));
+    if (!phys_addr) {
         pr_err("Failed to translate IOVA for atomic op\n");
         return 0;
     }
 
-    phys_addr = phys_pages[0];
-    kfree(phys_pages);
-
-    kva = memremap(phys_addr, 8, MEMREMAP_WB);
-    if (!kva)
-    {
+    kva = memremap(phys_addr + offset_in_page(guest_iova), 8, MEMREMAP_WB);
+    if (!kva) {
         pr_err("Failed to map page for atomic op\n");
         return 0;
     }
