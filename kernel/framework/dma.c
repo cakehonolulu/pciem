@@ -17,6 +17,12 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
+static inline phys_addr_t translate_iova_once(struct iommu_domain *domain,
+                                              dma_addr_t iova)
+{
+    return domain ? iommu_iova_to_phys(domain, iova) : iova;
+}
+
 static phys_addr_t *translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
                                    size_t len, unsigned int *num_pages)
 {
@@ -40,18 +46,10 @@ static phys_addr_t *translate_iova(struct pciem_root_complex *v, dma_addr_t gues
     }
 
     ret = -EFAULT;
-    for (iova = iova_start; iova < iova_end; iova += PAGE_SIZE) {
-        phys_addr_t hpa;
-
-        if (domain) {
-            hpa = iommu_iova_to_phys(domain, iova);
-            if (!hpa)
-                goto fail;
-        } else {
-            hpa = iova;
-        }
-
-        pages[page_count++] = hpa;
+    for (iova = iova_start; iova < iova_end; iova += PAGE_SIZE, ++page_count) {
+        pages[page_count] = translate_iova_once(domain, iova);
+        if (!pages[page_count])
+            goto fail;
     }
 
     *num_pages = page_count;
