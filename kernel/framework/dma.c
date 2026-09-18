@@ -183,8 +183,7 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
     int num_pages;
     atomic64_t *atomic_ptr;
 
-    if (guest_iova & 0x7)
-    {
+    if (!IS_ALIGNED(guest_iova, 8)) {
         pr_err("Atomic operation on unaligned address 0x%llx\n", guest_iova);
         return 0;
     }
