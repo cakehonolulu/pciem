@@ -17,9 +17,8 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
-static int translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
-                          size_t len, phys_addr_t **phys_pages_out,
-                          unsigned int *num_pages)
+static phys_addr_t *translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
+                                   size_t len, unsigned int *num_pages)
 {
     struct iommu_domain *domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
     phys_addr_t *pages __free(kfree) = NULL;
@@ -56,13 +55,13 @@ static int translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
     }
 
     *num_pages = page_count;
-    *phys_pages_out = no_free_ptr(pages);
+    return no_free_ptr(pages);
 
     return 0;
 
 fail:
     pr_err("failed to translate IOVA=%llx (%d)", guest_iova, ret);
-    return ret;
+    return ERR_PTR(ret);
 }
 
 int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
@@ -71,14 +70,13 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
     phys_addr_t *pages = NULL;
     unsigned int i, num_pages;
     size_t dst_offset = 0;
-    int ret;
 
     if (!v || !dst || !len)
         return -EINVAL;
 
-    ret = translate_iova(v, guest_iova, len, &pages, &num_pages);
-    if (ret)
-        return ret;
+    pages = translate_iova(v, guest_iova, len, &num_pages);
+    if (IS_ERR(pages))
+        return PTR_ERR(pages);
 
     pr_debug_ratelimited("read:  src=0x%llx dst=0x%lx len=0x%lx (%u pages) PASID %u\n",
             guest_iova, (size_t)dst, len, num_pages, pasid);
@@ -128,14 +126,13 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
     phys_addr_t *pages;
     unsigned int i, num_pages;
     size_t src_offset = 0;
-    int ret;
 
     if (!v || !src || !len)
         return -EINVAL;
 
-    ret = translate_iova(v, guest_iova, len, &pages, &num_pages);
-    if (ret)
-        return ret;
+    pages = translate_iova(v, guest_iova, len, &num_pages);
+    if (IS_ERR(pages))
+        return PTR_ERR(pages);
 
     pr_debug_ratelimited("write:  src=0x%lx dst=0x%llx len=0x%lx (%u pages) PASID %u\n",
             (size_t)src, guest_iova, len, num_pages, pasid);
@@ -187,7 +184,6 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
     phys_addr_t *phys_pages = NULL;
     int num_pages;
     atomic64_t *atomic_ptr;
-    int ret;
 
     if (guest_iova & 0x7)
     {
@@ -195,8 +191,8 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
         return 0;
     }
 
-    ret = translate_iova(v, guest_iova, 8, &phys_pages, &num_pages);
-    if (ret < 0)
+    phys_pages = translate_iova(v, guest_iova, 8, &num_pages);
+    if (IS_ERR(phys_pages))
     {
         pr_err("Failed to translate IOVA for atomic op\n");
         return 0;
