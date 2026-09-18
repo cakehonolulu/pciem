@@ -183,10 +183,10 @@ EXPORT_SYMBOL(pciem_dma_write_to_guest);
 static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type, u64 operand, u64 compare, u32 pasid)
 {
     struct iommu_domain *domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
+    struct pciem_dma_mapping m;
     phys_addr_t phys_addr;
-    void *kva;
     u64 old_val = 0;
-    atomic64_t *atomic_ptr;
+    int ret;
 
     if (!IS_ALIGNED(guest_iova, 8)) {
         pr_err("Atomic operation on unaligned address 0x%llx\n", guest_iova);
@@ -199,60 +199,57 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
         return 0;
     }
 
-    kva = memremap(phys_addr + offset_in_page(guest_iova), 8, MEMREMAP_WB);
-    if (!kva) {
+    ret = pciem_map_phys(&m, phys_addr + offset_in_page(guest_iova), 8);
+    if (ret) {
         pr_err("Failed to map page for atomic op\n");
         return 0;
     }
 
-    if (!IS_ALIGNED((unsigned long)kva, 8))
-    {
-        pr_err("Mapped address not 8-byte aligned: %px\n", kva);
-        memunmap(kva);
+    if (!IS_ALIGNED((unsigned long)m.addr, 8)) {
+        pr_err("Mapped address not 8-byte aligned: %px\n", m.addr);
+        pciem_unmap_phys(&m);
         return 0;
     }
-
-    atomic_ptr = (atomic64_t *)kva;
 
     switch (op_type)
     {
     case PCIEM_ATOMIC_FETCH_ADD:
-        old_val = atomic64_fetch_add(operand, atomic_ptr);
+        old_val = atomic64_fetch_add(operand, m.addr);
         pr_info("Atomic FETCH_ADD: IOVA 0x%llx, old=0x%llx, add=0x%llx, PASID %u\n", guest_iova, old_val, operand,
                 pasid);
         break;
 
     case PCIEM_ATOMIC_FETCH_SUB:
-        old_val = atomic64_fetch_sub(operand, atomic_ptr);
+        old_val = atomic64_fetch_sub(operand, m.addr);
         pr_info("Atomic FETCH_SUB: IOVA 0x%llx, old=0x%llx, sub=0x%llx, PASID %u\n", guest_iova, old_val, operand,
                 pasid);
         break;
 
     case PCIEM_ATOMIC_SWAP:
-        old_val = atomic64_xchg(atomic_ptr, operand);
+        old_val = atomic64_xchg(m.addr, operand);
         pr_info("Atomic SWAP: IOVA 0x%llx, old=0x%llx, new=0x%llx, PASID %u\n", guest_iova, old_val, operand, pasid);
         break;
 
     case PCIEM_ATOMIC_CAS:
-        old_val = atomic64_cmpxchg(atomic_ptr, compare, operand);
+        old_val = atomic64_cmpxchg(m.addr, compare, operand);
         pr_info("Atomic CAS: IOVA 0x%llx, old=0x%llx, expected=0x%llx, new=0x%llx, PASID %u\n", guest_iova, old_val,
                 compare, operand, pasid);
         break;
 
     case PCIEM_ATOMIC_FETCH_AND:
-        old_val = atomic64_fetch_and(operand, atomic_ptr);
+        old_val = atomic64_fetch_and(operand, m.addr);
         pr_info("Atomic FETCH_AND: IOVA 0x%llx, old=0x%llx, mask=0x%llx, PASID %u\n", guest_iova, old_val, operand,
                 pasid);
         break;
 
     case PCIEM_ATOMIC_FETCH_OR:
-        old_val = atomic64_fetch_or(operand, atomic_ptr);
+        old_val = atomic64_fetch_or(operand, m.addr);
         pr_info("Atomic FETCH_OR: IOVA 0x%llx, old=0x%llx, bits=0x%llx, PASID %u\n", guest_iova, old_val, operand,
                 pasid);
         break;
 
     case PCIEM_ATOMIC_FETCH_XOR:
-        old_val = atomic64_fetch_xor(operand, atomic_ptr);
+        old_val = atomic64_fetch_xor(operand, m.addr);
         pr_info("Atomic FETCH_XOR: IOVA 0x%llx, old=0x%llx, bits=0x%llx, PASID %u\n", guest_iova, old_val, operand,
                 pasid);
         break;
@@ -262,7 +259,7 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
         break;
     }
 
-    memunmap(kva);
+    pciem_unmap_phys(&m);
 
     return old_val;
 }
