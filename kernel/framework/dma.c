@@ -17,6 +17,28 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
+struct pciem_dma_mapping {
+    void *addr;
+    bool is_ram;
+};
+
+static int pciem_map_phys(struct pciem_dma_mapping *m, phys_addr_t paddr, size_t len)
+{
+    m->is_ram = !!pfn_valid(PHYS_PFN(paddr));
+    if (m->is_ram)
+        m->addr = phys_to_virt(paddr);
+    else
+        m->addr = memremap(paddr, len, MEMREMAP_WB);
+
+    return m->addr ? 0 : -EFAULT;
+}
+
+static void pciem_unmap_phys(struct pciem_dma_mapping *m)
+{
+    if (m->addr && !m->is_ram)
+        memunmap(m->addr);
+}
+
 static inline phys_addr_t translate_iova_once(struct iommu_domain *domain,
                                               dma_addr_t iova)
 {
@@ -68,6 +90,7 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
     phys_addr_t *pages = NULL;
     unsigned int i, num_pages;
     size_t dst_offset = 0;
+    int ret;
 
     if (!v || !dst || !len)
         return -EINVAL;
@@ -80,21 +103,14 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
             guest_iova, (size_t)dst, len, num_pages, pasid);
 
     for (i = 0; i < num_pages; ++i) {
-        void *src;
-        bool ram_page;
         size_t src_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
         size_t chunk_len = min_t(size_t, PAGE_SIZE - src_offset, len - dst_offset);
+        struct pciem_dma_mapping src;
 
-        ram_page = pfn_valid(PHYS_PFN(pages[i]));
-
-        if (ram_page) {
-            src = phys_to_virt(pages[i]);
-        } else {
-            src = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
-            if (!src) {
-                kfree(pages);
-                return -ENOMEM;
-            }
+        ret = pciem_map_phys(&src, pages[i], PAGE_SIZE);
+        if (ret) {
+            kfree(pages);
+            return ret;
         }
 
         dma_sync_single_for_cpu(&v->pciem_pdev->dev,
@@ -102,14 +118,12 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
                                 chunk_len, DMA_FROM_DEVICE);
 
         pr_debug_ratelimited("read%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
-                i, (size_t)src + src_offset, (size_t)dst + dst_offset,
+                i, (size_t)src.addr + src_offset, (size_t)dst + dst_offset,
                 chunk_len, pages[i] + src_offset);
 
-        memcpy(dst + dst_offset, src + src_offset, chunk_len);
+        memcpy(dst + dst_offset, src.addr + src_offset, chunk_len);
 
-        if (!ram_page)
-            memunmap(src);
-
+        pciem_unmap_phys(&src);
         dst_offset += chunk_len;
     }
 
@@ -124,6 +138,7 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
     phys_addr_t *pages;
     unsigned int i, num_pages;
     size_t src_offset = 0;
+    int ret;
 
     if (!v || !src || !len)
         return -EINVAL;
@@ -136,36 +151,27 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
             (size_t)src, guest_iova, len, num_pages, pasid);
 
     for (i = 0; i < num_pages; ++i) {
-        void *dst;
-        bool ram_page;
         unsigned int dst_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
         size_t chunk_len = min_t(size_t, PAGE_SIZE - dst_offset, len - src_offset);
+        struct pciem_dma_mapping dst;
 
-        ram_page = pfn_valid(PHYS_PFN(pages[i]));
-
-        if (ram_page) {
-            dst = phys_to_virt(pages[i]);
-        } else {
-            dst = memremap(pages[i], PAGE_SIZE, MEMREMAP_WB);
-            if (!dst) {
-                kfree(pages);
-                return -ENOMEM;
-            }
+        ret = pciem_map_phys(&dst, pages[i], PAGE_SIZE);
+        if (ret) {
+            kfree(pages);
+            return -ENOMEM;
         }
 
-        pr_debug_ratelimited("write%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
-                i, (size_t)src + src_offset, (size_t)dst + dst_offset,
+       pr_debug_ratelimited("write%u: src=0x%lx dst=0x%lx len=0x%lx (pa=%llx)",
+                i, (size_t)src + src_offset, (size_t)dst.addr + dst_offset,
                 chunk_len, pages[i] + dst_offset);
 
-        memcpy(dst + dst_offset, src + src_offset, chunk_len);
+        memcpy(dst.addr + dst_offset, src + src_offset, chunk_len);
 
         dma_sync_single_for_device(&v->pciem_pdev->dev,
                                    (dma_addr_t)(pages[i] + dst_offset),
                                    chunk_len, DMA_TO_DEVICE);
 
-        if (!ram_page)
-            memunmap(dst);
-
+        pciem_unmap_phys(&dst);
         src_offset += chunk_len;
     }
 
