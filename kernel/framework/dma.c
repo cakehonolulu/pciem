@@ -12,6 +12,7 @@
 
 #include <asm/cacheflush.h>
 #include <linux/atomic.h>
+#include <linux/cleanup.h>
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/mm.h>
@@ -38,6 +39,8 @@ static void pciem_unmap_phys(struct pciem_dma_mapping *m)
     if (m->addr && !m->is_ram)
         memunmap(m->addr);
 }
+
+DEFINE_FREE(pciem_unmap_phys, struct pciem_dma_mapping, pciem_unmap_phys(&_T))
 
 static inline phys_addr_t translate_iova_once(struct iommu_domain *domain,
                                               dma_addr_t iova)
@@ -105,7 +108,7 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
     for (i = 0; i < num_pages; ++i) {
         size_t src_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
         size_t chunk_len = min_t(size_t, PAGE_SIZE - src_offset, len - dst_offset);
-        struct pciem_dma_mapping src;
+        struct pciem_dma_mapping src __free(pciem_unmap_phys) = {};
 
         ret = pciem_map_phys(&src, pages[i], PAGE_SIZE);
         if (ret) {
@@ -123,7 +126,6 @@ int pciem_dma_read_from_guest(struct pciem_root_complex *v, u64 guest_iova,
 
         memcpy(dst + dst_offset, src.addr + src_offset, chunk_len);
 
-        pciem_unmap_phys(&src);
         dst_offset += chunk_len;
     }
 
@@ -153,7 +155,7 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
     for (i = 0; i < num_pages; ++i) {
         unsigned int dst_offset = (i == 0) ? offset_in_page(guest_iova) : 0;
         size_t chunk_len = min_t(size_t, PAGE_SIZE - dst_offset, len - src_offset);
-        struct pciem_dma_mapping dst;
+        struct pciem_dma_mapping dst __free(pciem_unmap_phys) = {};
 
         ret = pciem_map_phys(&dst, pages[i], PAGE_SIZE);
         if (ret) {
@@ -171,7 +173,6 @@ int pciem_dma_write_to_guest(struct pciem_root_complex *v, u64 guest_iova,
                                    (dma_addr_t)(pages[i] + dst_offset),
                                    chunk_len, DMA_TO_DEVICE);
 
-        pciem_unmap_phys(&dst);
         src_offset += chunk_len;
     }
 
@@ -183,7 +184,7 @@ EXPORT_SYMBOL(pciem_dma_write_to_guest);
 static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type, u64 operand, u64 compare, u32 pasid)
 {
     struct iommu_domain *domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
-    struct pciem_dma_mapping m;
+    struct pciem_dma_mapping m __free(pciem_unmap_phys) = {};
     phys_addr_t phys_addr;
     u64 old_val = 0;
     int ret;
@@ -207,7 +208,6 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
 
     if (!IS_ALIGNED((unsigned long)m.addr, 8)) {
         pr_err("Mapped address not 8-byte aligned: %px\n", m.addr);
-        pciem_unmap_phys(&m);
         return 0;
     }
 
@@ -258,8 +258,6 @@ static u64 do_atomic_op(struct pciem_root_complex *v, u64 guest_iova, u8 op_type
         pr_err("Unknown atomic operation type %u\n", op_type);
         break;
     }
-
-    pciem_unmap_phys(&m);
 
     return old_val;
 }
