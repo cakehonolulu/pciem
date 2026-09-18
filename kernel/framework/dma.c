@@ -22,9 +22,9 @@ static int translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
                           unsigned int *num_pages)
 {
     struct iommu_domain *domain = iommu_get_domain_for_dev(&v->pciem_pdev->dev);
+    phys_addr_t *pages __free(kfree) = NULL;
     dma_addr_t iova, iova_start, iova_end;
     size_t max_pages, page_count = 0;
-    phys_addr_t *pages = NULL;
     int ret;
 
     iova_start = PAGE_ALIGN_DOWN(guest_iova);
@@ -40,15 +40,14 @@ static int translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
         goto fail;
     }
 
+    ret = -EFAULT;
     for (iova = iova_start; iova < iova_end; iova += PAGE_SIZE) {
         phys_addr_t hpa;
 
         if (domain) {
             hpa = iommu_iova_to_phys(domain, iova);
-            if (!hpa) {
-                ret = -EFAULT;
+            if (!hpa)
                 goto fail;
-            }
         } else {
             hpa = iova;
         }
@@ -57,14 +56,12 @@ static int translate_iova(struct pciem_root_complex *v, dma_addr_t guest_iova,
     }
 
     *num_pages = page_count;
-    *phys_pages_out = pages;
+    *phys_pages_out = no_free_ptr(pages);
 
     return 0;
 
 fail:
     pr_err("failed to translate IOVA=%llx (%d)", guest_iova, ret);
-    if (pages)
-        kfree(pages);
     return ret;
 }
 
