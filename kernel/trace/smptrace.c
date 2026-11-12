@@ -71,40 +71,52 @@ static void __fill_io_notif(struct smptrace_io *io, const u8 *data, u32 size,
 	}
 }
 
+void smptrace_notify_read(struct smptrace_ctx *ctx, struct smptrace_map *map,
+                          u64 addr, u32 size, const u8 *data)
+{
+	struct smptrace_io io;
+
+	if (!ctx->notif.read)
+		return;
+
+	__fill_io_notif(&io, data, size,
+	                smptrace_shadow_offset(ctx, map, addr, size));
+	ctx->notif.read(ctx, &io);
+}
+
+void smptrace_notify_write(struct smptrace_ctx *ctx, struct smptrace_map *map,
+                           u64 addr, u32 size, const u8 *data)
+{
+	struct smptrace_io io = {0};
+
+	if (!ctx->notif.write)
+		return;
+
+	__fill_io_notif(&io, data, size,
+	                smptrace_shadow_offset(ctx, map, addr, size));
+	ctx->notif.write(ctx, &io);
+}
+
 void smptrace_emulate_read(struct smptrace_ctx *ctx, struct smptrace_map *map,
                          u64 addr, u32 size, u8 *dst)
 {
-	u64 off;
-	struct smptrace_io io;
+	u64 off = smptrace_shadow_offset(ctx, map, addr, size);
 
-	off = (map->pa - ctx->pa) + (addr - map->va);
-	BUG_ON(off >= ctx->len || off + size > ctx->len);
 	memcpy_fromio(dst, ctx->shadow_va + off, size);
-
-	if (ctx->notif.read) {
-		__fill_io_notif(&io, dst, size, off);
-		ctx->notif.read(ctx, &io);
-	}
+	smptrace_notify_read(ctx, map, addr, size, dst);
 }
 
 void smptrace_emulate_write(struct smptrace_ctx *ctx, struct smptrace_map *map,
                           u64 addr, u32 size, const u8 *src)
 {
-	u64 off;
-	struct smptrace_io io = {0};
-
-	off = (map->pa - ctx->pa) + (addr - map->va);
-	BUG_ON(off >= ctx->len || off + size > ctx->len);
+	u64 off = smptrace_shadow_offset(ctx, map, addr, size);
 
 	if (!ctx->stop_writes)
 		memcpy_toio(ctx->shadow_va + off, src, size);
 
 	pr_debug("Write @ 0x%llx:%x", off, size);
 
-	if (ctx->notif.write) {
-		__fill_io_notif(&io, src, size, off);
-		ctx->notif.write(ctx, &io);
-	}
+	smptrace_notify_write(ctx, map, addr, size, src);
 }
 
 int smptrace_enter_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs)

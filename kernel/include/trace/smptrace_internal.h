@@ -44,6 +44,17 @@ static inline bool smptrace_find_map_rcu(struct smptrace_ctx *ctx,
 }
 
 
+/* Offset into the shadow mapping for an access of @size bytes at @addr */
+static inline u64 smptrace_shadow_offset(struct smptrace_ctx *ctx,
+                                         struct smptrace_map *map,
+                                         u64 addr, u32 size)
+{
+	u64 off = (map->pa - ctx->pa) + (addr - map->va);
+
+	BUG_ON(off >= ctx->len || off + size > ctx->len);
+	return off;
+}
+
 int smptrace_register_probes(struct smptrace_ctx *ctx);
 int smptrace_enter_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs);
 int smptrace_exit_ioremap(struct kretprobe_instance *ri, struct pt_regs *regs);
@@ -52,6 +63,11 @@ void smptrace_emulate_write(struct smptrace_ctx *ctx, struct smptrace_map *map,
                             u64 addr, u32 size, const u8 *src);
 void smptrace_emulate_read(struct smptrace_ctx *ctx, struct smptrace_map *map,
                            u64 addr, u32 size, u8 *dst);
+/* Notify an access without performing it on the shadow mapping */
+void smptrace_notify_read(struct smptrace_ctx *ctx, struct smptrace_map *map,
+                          u64 addr, u32 size, const u8 *data);
+void smptrace_notify_write(struct smptrace_ctx *ctx, struct smptrace_map *map,
+                           u64 addr, u32 size, const u8 *data);
 
 /* Arch-specific functionality. Architectures must implement these in order
  * to be supported by smptrace */
