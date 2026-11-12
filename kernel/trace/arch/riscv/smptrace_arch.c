@@ -3,6 +3,7 @@
  *  Copyright (C) 2026  Carlos López <carlos.lopezr4096@gmail.com>
  *  Copyright (C) 2026  Joel Bueno <buenocalvachejoel@gmail.com>
  */
+#include <linux/bitops.h>
 #include <asm/csr.h>
 #include "trace/smptrace_internal.h"
 
@@ -438,13 +439,9 @@ static int emulate_riscv_fault(struct smptrace_ctx *ctx,
 		smptrace_emulate_read(ctx, map, fault_va, ls.size, (u8 *)&val);
 
 		if (ls.rd != 0) {
-			if (ls.sign_extend) {
-				unsigned int sbits = ls.size * 8;
-				s64 sval = (s64)(val << (64 - sbits)) >> (64 - sbits);
-				riscv_set_reg(regs, ls.rd, (unsigned long)sval);
-			} else {
-				riscv_set_reg(regs, ls.rd, (unsigned long)val);
-			}
+			if (ls.sign_extend)
+				val = sign_extend64(val, ls.size * 8 - 1);
+			riscv_set_reg(regs, ls.rd, (unsigned long)val);
 		}
 	}
 
