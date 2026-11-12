@@ -3,7 +3,9 @@
  *  Copyright (C) 2026  Carlos López <carlos.lopezr4096@gmail.com>
  *  Copyright (C) 2026  Joel Bueno <buenocalvachejoel@gmail.com>
  */
+#include <linux/bitfield.h>
 #include <linux/bitops.h>
+#include <asm/asm-extable.h>
 #include <asm/csr.h>
 #include "trace/smptrace_internal.h"
 
@@ -396,6 +398,148 @@ static int riscv_decode_ls_insn(u32 insn, struct riscv_ls_insn *out)
 	return 0;
 }
 
+#define RISCV_INSN_OPCODE  GENMASK(6, 0)
+#define RISCV_INSN_RD      GENMASK(11, 7)
+#define RISCV_INSN_FUNCT3  GENMASK(14, 12)
+#define RISCV_INSN_RS2     GENMASK(24, 20)
+
+/* Atomic memory operations (Zaamo) */
+#define RISCV_OPCODE_AMO   0x2F
+#define RISCV_AMO_FUNCT5   GENMASK(31, 27)
+
+#define RISCV_AMO_ADD   0x00
+#define RISCV_AMO_SWAP  0x01
+#define RISCV_AMO_XOR   0x04
+#define RISCV_AMO_OR    0x08
+#define RISCV_AMO_AND   0x0C
+#define RISCV_AMO_MIN   0x10
+#define RISCV_AMO_MAX   0x14
+#define RISCV_AMO_MINU  0x18
+#define RISCV_AMO_MAXU  0x1C
+
+/* Run the specified AMO instruction on @ptr */
+#define RISCV_AMO_ASM(insn, ptr, old, src, err)				\
+	asm volatile("1:	" insn ".aqrl %[o], %[s], %[mem]\n"		\
+	             "2:\n"						\
+	             _ASM_EXTABLE_UACCESS_ERR(1b, 2b, %[e])		\
+	             : [o] "=&r" (old), [mem] "+A" (*(ptr)),		\
+	               [e] "+r" (err)					\
+	             : [s] "r" (src)					\
+	             : "memory")
+
+typedef int riscv_amo_fn(void __iomem *addr, u32 size, u64 src,
+                         bool stop_writes, u64 *oldp, u64 *newp);
+
+/*
+ * Generate riscv_amo_<name>(), which runs amo<name> on @addr (or only reads
+ * it if @stop_writes) and computes the value written with @expr, from the
+ * sign-extended old value (a) and rs2 (b).
+ */
+#define RISCV_AMO_OP(name, expr)					\
+static int riscv_amo_##name(void __iomem *addr, u32 size, u64 src,	\
+                            bool stop_writes, u64 *oldp, u64 *newp)	\
+{									\
+	u64 __maybe_unused a, b;					\
+	u64 old = 0;							\
+	int err = 0;							\
+									\
+	if (stop_writes)						\
+		memcpy_fromio(&old, addr, size);			\
+	else if (size == 4)						\
+		RISCV_AMO_ASM("amo" #name ".w", (u32 __force *)addr,	\
+		              old, src, err);				\
+	else								\
+		RISCV_AMO_ASM("amo" #name ".d", (u64 __force *)addr,	\
+		              old, src, err);				\
+									\
+	a = sign_extend64(old, size * 8 - 1);				\
+	b = sign_extend64(src, size * 8 - 1);				\
+	*oldp = old;							\
+	*newp = (expr);							\
+	return err;							\
+}
+
+RISCV_AMO_OP(add,  a + b)
+RISCV_AMO_OP(swap, b)
+RISCV_AMO_OP(xor,  a ^ b)
+RISCV_AMO_OP(or,   a | b)
+RISCV_AMO_OP(and,  a & b)
+RISCV_AMO_OP(min,  min((s64)a, (s64)b))
+RISCV_AMO_OP(max,  max((s64)a, (s64)b))
+RISCV_AMO_OP(minu, min(a, b))
+RISCV_AMO_OP(maxu, max(a, b))
+
+/* Indexed by funct5, which is 5 bits wide */
+static riscv_amo_fn *const riscv_amo_ops[32] = {
+	[RISCV_AMO_ADD]  = riscv_amo_add,
+	[RISCV_AMO_SWAP] = riscv_amo_swap,
+	[RISCV_AMO_XOR]  = riscv_amo_xor,
+	[RISCV_AMO_OR]   = riscv_amo_or,
+	[RISCV_AMO_AND]  = riscv_amo_and,
+	[RISCV_AMO_MIN]  = riscv_amo_min,
+	[RISCV_AMO_MAX]  = riscv_amo_max,
+	[RISCV_AMO_MINU] = riscv_amo_minu,
+	[RISCV_AMO_MAXU] = riscv_amo_maxu,
+};
+
+/* Access size of an atomic instruction, or 0 if it is not supported */
+static u32 riscv_atomic_size(u32 insn)
+{
+	/* funct3 is log2 of the access size. Only .W and .D are supported */
+	switch (FIELD_GET(RISCV_INSN_FUNCT3, insn)) {
+	case 0x2:
+		return 4;
+	case 0x3:
+		return 8;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Run the AMO on the shadow mapping, and update the registers.
+ */
+static int riscv_emulate_amo(struct smptrace_ctx *ctx,
+                             struct smptrace_map *map,
+                             unsigned long fault_va,
+                             struct pt_regs *regs, u32 insn)
+{
+	u32 rd     = FIELD_GET(RISCV_INSN_RD, insn);
+	u32 rs2    = FIELD_GET(RISCV_INSN_RS2, insn);
+	u32 funct5 = FIELD_GET(RISCV_AMO_FUNCT5, insn);
+	u32 size   = riscv_atomic_size(insn);
+	u64 off, src, old, new;
+
+	if (!size || !riscv_amo_ops[funct5])
+		return -EINVAL;
+
+	src = riscv_get_reg(regs, rs2);
+	off = smptrace_shadow_offset(ctx, map, fault_va, size);
+
+	if (riscv_amo_ops[funct5](ctx->shadow_va + off, size, src,
+	                          ctx->stop_writes, &old, &new))
+		return -EFAULT;
+
+	smptrace_notify_read(ctx, map, fault_va, size, (u8 *)&old);
+	smptrace_notify_write(ctx, map, fault_va, size, (u8 *)&new);
+
+	riscv_set_reg(regs, rd, sign_extend64(old, size * 8 - 1));
+	return 0;
+}
+
+static int riscv_emulate_atomic(struct smptrace_ctx *ctx,
+                                struct smptrace_map *map,
+                                unsigned long fault_va,
+                                struct pt_regs *regs, u32 insn)
+{
+	int ret = riscv_emulate_amo(ctx, map, fault_va, regs, insn);
+
+	if (ret)
+		pr_warn_ratelimited("failed to emulate atomic at epc=0x%lx insn=0x%08x: %d",
+		                    regs->epc, insn, ret);
+	return ret;
+}
+
 static void riscv_emulate_write(struct smptrace_ctx *ctx,
                                 struct smptrace_map *map,
                                 unsigned long fault_va, struct pt_regs *regs,
@@ -470,7 +614,10 @@ static int emulate_riscv_fault(struct smptrace_ctx *ctx,
 	}
 
 	is_rvc = (insn & 0x3) != 0x3;
-	ret = riscv_emulate_ls(ctx, map, fault_va, regs, insn);
+	if (!is_rvc && FIELD_GET(RISCV_INSN_OPCODE, insn) == RISCV_OPCODE_AMO)
+		ret = riscv_emulate_atomic(ctx, map, fault_va, regs, insn);
+	else
+		ret = riscv_emulate_ls(ctx, map, fault_va, regs, insn);
 	if (ret)
 		return ret;
 
