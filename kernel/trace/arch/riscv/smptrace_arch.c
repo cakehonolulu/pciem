@@ -422,25 +422,14 @@ static void riscv_emulate_read(struct smptrace_ctx *ctx,
 	}
 }
 
-static int emulate_riscv_fault(struct smptrace_ctx *ctx,
-                               struct smptrace_map *map,
-                               unsigned long fault_va,
-                               struct pt_regs *regs)
+static int riscv_emulate_ls(struct smptrace_ctx *ctx,
+                            struct smptrace_map *map,
+                            unsigned long fault_va,
+                            struct pt_regs *regs, u32 insn)
 {
 	struct riscv_ls_insn ls;
-	u32 insn;
-	bool is_rvc;
 
-	if (user_mode(regs))
-		return -EACCES;
-
-	if (copy_from_kernel_nofault(&insn, (void *)regs->epc, sizeof(insn))) {
-		pr_warn_ratelimited("failed to read insn at epc=0x%lx", regs->epc);
-		return -EFAULT;
-	}
-
-	is_rvc = (insn & 0x3) != 0x3;
-	if (is_rvc) {
+	if ((insn & 0x3) != 0x3) {
 		if (riscv_decode_rvc_ls_insn((u16)insn, &ls)) {
 			pr_warn_ratelimited(
 				"unhandled RVC instruction at epc=0x%lx (insn=0x%04x)",
@@ -460,6 +449,30 @@ static int emulate_riscv_fault(struct smptrace_ctx *ctx,
 		riscv_emulate_write(ctx, map, fault_va, regs, &ls);
 	else
 		riscv_emulate_read(ctx, map, fault_va, regs, &ls);
+	return 0;
+}
+
+static int emulate_riscv_fault(struct smptrace_ctx *ctx,
+                               struct smptrace_map *map,
+                               unsigned long fault_va,
+                               struct pt_regs *regs)
+{
+	u32 insn;
+	bool is_rvc;
+	int ret;
+
+	if (user_mode(regs))
+		return -EACCES;
+
+	if (copy_from_kernel_nofault(&insn, (void *)regs->epc, sizeof(insn))) {
+		pr_warn_ratelimited("failed to read insn at epc=0x%lx", regs->epc);
+		return -EFAULT;
+	}
+
+	is_rvc = (insn & 0x3) != 0x3;
+	ret = riscv_emulate_ls(ctx, map, fault_va, regs, insn);
+	if (ret)
+		return ret;
 
 	// Compressed opcodes are 2 bytes, let's take that into account or fun stuff awaits us
 	regs->epc += is_rvc ? 2 : 4;
