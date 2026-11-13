@@ -396,6 +396,32 @@ static int riscv_decode_ls_insn(u32 insn, struct riscv_ls_insn *out)
 	return 0;
 }
 
+static void riscv_emulate_write(struct smptrace_ctx *ctx,
+                                struct smptrace_map *map,
+                                unsigned long fault_va, struct pt_regs *regs,
+                                const struct riscv_ls_insn *ls)
+{
+	unsigned long src = riscv_get_reg(regs, ls->rs2);
+
+	smptrace_emulate_write(ctx, map, fault_va, ls->size, (u8 *)&src);
+}
+
+static void riscv_emulate_read(struct smptrace_ctx *ctx,
+                               struct smptrace_map *map,
+                               unsigned long fault_va, struct pt_regs *regs,
+                               const struct riscv_ls_insn *ls)
+{
+	u64 val = 0;
+
+	smptrace_emulate_read(ctx, map, fault_va, ls->size, (u8 *)&val);
+
+	if (ls->rd != 0) {
+		if (ls->sign_extend)
+			val = sign_extend64(val, ls->size * 8 - 1);
+		riscv_set_reg(regs, ls->rd, (unsigned long)val);
+	}
+}
+
 static int emulate_riscv_fault(struct smptrace_ctx *ctx,
                                struct smptrace_map *map,
                                unsigned long fault_va,
@@ -403,7 +429,6 @@ static int emulate_riscv_fault(struct smptrace_ctx *ctx,
 {
 	struct riscv_ls_insn ls;
 	u32 insn;
-	u64 val;
 	bool is_rvc;
 
 	if (user_mode(regs))
@@ -431,19 +456,10 @@ static int emulate_riscv_fault(struct smptrace_ctx *ctx,
 		}
 	}
 
-	if (ls.is_store) {
-		unsigned long src = riscv_get_reg(regs, ls.rs2);
-		smptrace_emulate_write(ctx, map, fault_va, ls.size, (u8 *)&src);
-	} else {
-		val = 0;
-		smptrace_emulate_read(ctx, map, fault_va, ls.size, (u8 *)&val);
-
-		if (ls.rd != 0) {
-			if (ls.sign_extend)
-				val = sign_extend64(val, ls.size * 8 - 1);
-			riscv_set_reg(regs, ls.rd, (unsigned long)val);
-		}
-	}
+	if (ls.is_store)
+		riscv_emulate_write(ctx, map, fault_va, regs, &ls);
+	else
+		riscv_emulate_read(ctx, map, fault_va, regs, &ls);
 
 	// Compressed opcodes are 2 bytes, let's take that into account or fun stuff awaits us
 	regs->epc += is_rvc ? 2 : 4;
